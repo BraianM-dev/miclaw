@@ -2,20 +2,15 @@ FROM golang:1.21 AS builder
 
 WORKDIR /src
 
-# Copia todo el contenido (incluyendo main.go y posibles archivos)
-COPY . .
+# Copiar todos los archivos necesarios
+COPY go.mod go.sum* ./
+COPY main.go .
+COPY eliza_rules.json .
 
-# Si no existe go.mod, lo inicializamos
-RUN if [ ! -f go.mod ]; then \
-        go mod init miclaw-gateway && \
-        go get github.com/mattn/go-sqlite3 && \
-        go get github.com/go-telegram-bot-api/telegram-bot-api/v5 && \
-        go mod tidy; \
-    else \
-        go mod download; \
-    fi
+# Descargar dependencias
+RUN go mod download || go mod init miclaw-gateway && go get github.com/mattn/go-sqlite3 && go mod tidy
 
-# Compilar con CGO (para SQLite)
+# Compilar
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o gateway main.go
 
 # Imagen final
