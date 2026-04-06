@@ -92,6 +92,12 @@ type OllamaChatResponse struct {
 	Done      bool          `json:"done"`
 }
 
+type DashboardStats struct {
+	Equipos  int `json:"equipos"`
+	Tickets  int `json:"tickets"`
+	Acciones int `json:"acciones"`
+}
+
 var (
 	db          *sql.DB
 	config      SystemConfig
@@ -208,6 +214,16 @@ func inferPermissionMode(agent Agent, command string) (string, string) {
 }
 
 // ---------- Handlers API ----------
+func apiStatsHandler(w http.ResponseWriter, r *http.Request) {
+	var stats DashboardStats
+	db.QueryRow(`SELECT COUNT(DISTINCT pc_name) FROM eliza_tickets`).Scan(&stats.Equipos)
+	db.QueryRow(`SELECT COUNT(*) FROM eliza_tickets`).Scan(&stats.Tickets)
+	db.QueryRow(`SELECT COUNT(*) FROM actions WHERE date(created_at) = date('now', 'localtime')`).Scan(&stats.Acciones)
+	
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(stats)
+}
+
 func apiElizaTicketHandler(w http.ResponseWriter, r *http.Request) {
 	var t ElizaTicket
 	json.NewDecoder(r.Body).Decode(&t)
@@ -285,9 +301,18 @@ const htmlUI = `<!DOCTYPE html>
     <div id="view-dash" class="view block">
         <h2 class="text-3xl font-bold mb-6 text-white">Vista General</h2>
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Equipos Online</h3><p class="text-4xl font-bold text-primary mt-2">52</p></div>
-            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Tickets Pendientes</h3><p class="text-4xl font-bold text-yellow-500 mt-2">3</p></div>
-            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Acciones IA Hoy</h3><p class="text-4xl font-bold text-blue-400 mt-2">14</p></div>
+            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+                <h3 class="text-slate-400 text-sm">Equipos Detectados</h3>
+                <p id="stat-equipos" class="text-4xl font-bold text-primary mt-2">0</p>
+            </div>
+            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+                <h3 class="text-slate-400 text-sm">Tickets Recibidos</h3>
+                <p id="stat-tickets" class="text-4xl font-bold text-yellow-500 mt-2">0</p>
+            </div>
+            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg">
+                <h3 class="text-slate-400 text-sm">Acciones IA Hoy</h3>
+                <p id="stat-acciones" class="text-4xl font-bold text-blue-400 mt-2">0</p>
+            </div>
         </div>
     </div>
 
@@ -320,6 +345,10 @@ const htmlUI = `<!DOCTYPE html>
 </main>
 
 <script>
+document.addEventListener('DOMContentLoaded', () => {
+    loadStats();
+});
+
 function nav(target) {
     document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
     document.getElementById('view-' + target).classList.remove('hidden');
@@ -329,16 +358,32 @@ function nav(target) {
     });
     document.getElementById('btn-' + target).classList.add('bg-slate-700', 'text-white');
     
+    if(target === 'dash') loadStats();
     if(target === 'tickets') loadTickets();
     if(target === 'timeline') loadTimeline();
+}
+
+function loadStats() {
+    fetch('/api/stats')
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('stat-equipos').innerText = data.equipos;
+            document.getElementById('stat-tickets').innerText = data.tickets;
+            document.getElementById('stat-acciones').innerText = data.acciones;
+        })
+        .catch(err => console.error("Error cargando estadísticas:", err));
 }
 
 function loadTickets() {
     fetch('/api/eliza/tickets_list').then(r=>r.json()).then(data => {
         let html = '';
-        data.forEach(t => {
-            html += '<tr class="hover:bg-slate-750 transition-colors"><td class="p-4 text-sm text-slate-400">'+new Date(t.timestamp).toLocaleString()+'</td><td class="p-4"><p class="font-bold text-white">'+t.user+'</p><p class="text-xs text-slate-400">'+t.pc_name+'</p></td><td class="p-4 text-white">'+t.message+'</td><td class="p-4"><span class="bg-slate-900 text-xs px-3 py-1 rounded text-primary border border-primary/30">'+(t.telemetry || 'Sin datos')+'</span></td></tr>';
-        });
+        if(data && data.length > 0) {
+            data.forEach(t => {
+                html += '<tr class="hover:bg-slate-750 transition-colors"><td class="p-4 text-sm text-slate-400">'+new Date(t.timestamp).toLocaleString()+'</td><td class="p-4"><p class="font-bold text-white">'+t.user+'</p><p class="text-xs text-slate-400">'+t.pc_name+'</p></td><td class="p-4 text-white">'+t.message+'</td><td class="p-4"><span class="bg-slate-900 text-xs px-3 py-1 rounded text-primary border border-primary/30">'+(t.telemetry || 'Sin datos')+'</span></td></tr>';
+            });
+        } else {
+            html = '<tr><td colspan="4" class="p-4 text-center text-slate-500">No hay tickets recientes</td></tr>';
+        }
         document.getElementById('tickets-body').innerHTML = html;
     });
 }
@@ -346,17 +391,21 @@ function loadTickets() {
 function loadTimeline() {
     fetch('/api/actions').then(r=>r.json()).then(data => {
         let html = '';
-        data.forEach(a => {
-            let statusColor = a.status === 'executed' ? 'bg-primary' : (a.status === 'rolled_back' ? 'bg-yellow-500' : 'bg-red-500');
-            html += '<div class="flex items-start gap-4 p-4 bg-gray-800 rounded-xl border border-slate-700">';
-            html += '<div class="w-3 h-3 mt-2 rounded-full shadow-[0_0_10px_currentColor] '+statusColor+'"></div>';
-            html += '<div class="flex-1"><p class="text-sm text-slate-400">'+new Date(a.created_at).toLocaleString()+' | PC: '+a.agent_id+'</p>';
-            html += '<p class="text-lg font-bold text-white mt-1">'+a.command+'</p><p class="text-sm text-slate-300 mt-1">'+(a.result || a.status)+'</p></div>';
-            if(a.rollback_command && a.status === 'executed') {
-                html += '<button onclick="doRollback(\''+a.id+'\')" class="px-4 py-2 bg-slate-700 hover:bg-yellow-600 text-white rounded-lg transition-colors text-sm font-medium">↩ Deshacer</button>';
-            }
-            html += '</div>';
-        });
+        if(data && data.length > 0) {
+            data.forEach(a => {
+                let statusColor = a.status === 'executed' ? 'bg-primary' : (a.status === 'rolled_back' ? 'bg-yellow-500' : 'bg-red-500');
+                html += '<div class="flex items-start gap-4 p-4 bg-gray-800 rounded-xl border border-slate-700">';
+                html += '<div class="w-3 h-3 mt-2 rounded-full shadow-[0_0_10px_currentColor] '+statusColor+'"></div>';
+                html += '<div class="flex-1"><p class="text-sm text-slate-400">'+new Date(a.created_at).toLocaleString()+' | PC: '+a.agent_id+'</p>';
+                html += '<p class="text-lg font-bold text-white mt-1">'+a.command+'</p><p class="text-sm text-slate-300 mt-1">'+(a.result || a.status)+'</p></div>';
+                if(a.rollback_command && a.status === 'executed') {
+                    html += '<button onclick="doRollback(\''+a.id+'\')" class="px-4 py-2 bg-slate-700 hover:bg-yellow-600 text-white rounded-lg transition-colors text-sm font-medium">↩ Deshacer</button>';
+                }
+                html += '</div>';
+            });
+        } else {
+            html = '<p class="text-slate-500">No hay acciones registradas.</p>';
+        }
         document.getElementById('timeline-body').innerHTML = html;
     });
 }
@@ -379,6 +428,7 @@ func main() {
 	if agentAPIKey == "" { agentAPIKey = "ClaveSuperSecreta" }
 
 	http.HandleFunc("/", webUIRoot)
+	http.HandleFunc("/api/stats", apiStatsHandler)
 	http.HandleFunc("/api/eliza/ticket", apiElizaTicketHandler)
 	http.HandleFunc("/api/eliza/tickets_list", apiTicketsListHandler)
 	http.HandleFunc("/api/actions", apiActionsHandler)
