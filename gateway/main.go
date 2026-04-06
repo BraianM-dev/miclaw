@@ -51,11 +51,11 @@ type Action struct {
 }
 
 type PlannerTask struct {
-	Target  string                 `json:"target"`
-	Command string                 `json:"command"`
-	Params  map[string]interface{} `json:"params"`
-	Goal    string                 `json:"goal"`
-	Rollback string                `json:"rollback"`
+	Target   string                 `json:"target"`
+	Command  string                 `json:"command"`
+	Params   map[string]interface{} `json:"params"`
+	Goal     string                 `json:"goal"`
+	Rollback string                 `json:"rollback"`
 }
 
 type PlannerResponse struct {
@@ -83,6 +83,13 @@ type OllamaChatRequest struct {
 	Messages []OllamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
 	Format   string          `json:"format"`
+}
+
+type OllamaChatResponse struct {
+	Model     string        `json:"model"`
+	CreatedAt string        `json:"created_at"`
+	Message   OllamaMessage `json:"message"`
+	Done      bool          `json:"done"`
 }
 
 var (
@@ -257,107 +264,107 @@ const htmlUI = `<!DOCTYPE html>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
   tailwind.config = { darkMode: 'class', theme: { extend: { colors: {
-	gray: { 800: '#1e293b', 900: '#0f172a' }, primary: '#10b981'
+    gray: { 800: '#1e293b', 900: '#0f172a' }, primary: '#10b981'
   }}}}
 </script>
 </head>
 <body class="bg-gray-900 text-slate-200 flex h-screen overflow-hidden font-sans">
 
 <aside class="w-64 bg-gray-800 border-r border-slate-700 flex flex-col shadow-2xl z-10">
-	<div class="p-6"><h1 class="text-2xl font-bold text-primary tracking-wider">MICLAW<span class="text-white">.os</span></h1><p class="text-xs text-slate-400">IT Command Center</p></div>
-	<nav class="flex-1 px-4 space-y-2">
-		<button onclick="nav('dash')" id="btn-dash" class="w-full text-left px-4 py-3 rounded-lg bg-slate-700 text-white font-medium transition-all">📊 Dashboard</button>
-		<button onclick="nav('tickets')" id="btn-tickets" class="w-full text-left px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-700 hover:text-white transition-all">🎫 Tickets (Eliza)</button>
-		<button onclick="nav('timeline')" id="btn-timeline" class="w-full text-left px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-700 hover:text-white transition-all">⏱️ Timeline & Rollback</button>
-		<button onclick="nav('config')" id="btn-config" class="w-full text-left px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-700 hover:text-white transition-all">⚙️ Configuración</button>
-	</nav>
+    <div class="p-6"><h1 class="text-2xl font-bold text-primary tracking-wider">MICLAW<span class="text-white">.os</span></h1><p class="text-xs text-slate-400">IT Command Center</p></div>
+    <nav class="flex-1 px-4 space-y-2">
+        <button onclick="nav('dash')" id="btn-dash" class="w-full text-left px-4 py-3 rounded-lg bg-slate-700 text-white font-medium transition-all">📊 Dashboard</button>
+        <button onclick="nav('tickets')" id="btn-tickets" class="w-full text-left px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-700 hover:text-white transition-all">🎫 Tickets (Eliza)</button>
+        <button onclick="nav('timeline')" id="btn-timeline" class="w-full text-left px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-700 hover:text-white transition-all">⏱️ Timeline & Rollback</button>
+        <button onclick="nav('config')" id="btn-config" class="w-full text-left px-4 py-3 rounded-lg text-slate-400 hover:bg-slate-700 hover:text-white transition-all">⚙️ Configuración</button>
+    </nav>
 </aside>
 
 <main class="flex-1 p-8 overflow-y-auto">
-	
-	<div id="view-dash" class="view block">
-		<h2 class="text-3xl font-bold mb-6 text-white">Vista General</h2>
-		<div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-			<div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Equipos Online</h3><p class="text-4xl font-bold text-primary mt-2">52</p></div>
-			<div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Tickets Pendientes</h3><p class="text-4xl font-bold text-yellow-500 mt-2">3</p></div>
-			<div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Acciones IA Hoy</h3><p class="text-4xl font-bold text-blue-400 mt-2">14</p></div>
-		</div>
-	</div>
+    
+    <div id="view-dash" class="view block">
+        <h2 class="text-3xl font-bold mb-6 text-white">Vista General</h2>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Equipos Online</h3><p class="text-4xl font-bold text-primary mt-2">52</p></div>
+            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Tickets Pendientes</h3><p class="text-4xl font-bold text-yellow-500 mt-2">3</p></div>
+            <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 shadow-lg"><h3 class="text-slate-400 text-sm">Acciones IA Hoy</h3><p class="text-4xl font-bold text-blue-400 mt-2">14</p></div>
+        </div>
+    </div>
 
-	<div id="view-tickets" class="view hidden">
-		<h2 class="text-3xl font-bold mb-6 text-white">Bandeja de Entrada (Usuarios)</h2>
-		<div class="bg-gray-800 rounded-xl border border-slate-700 overflow-hidden shadow-lg">
-			<table class="w-full text-left">
-				<thead class="bg-slate-700 text-slate-300"><tr><th class="p-4">Fecha</th><th class="p-4">Usuario / PC</th><th class="p-4">Problema</th><th class="p-4">Telemetría Capturada</th></tr></thead>
-				<tbody id="tickets-body" class="divide-y divide-slate-700"></tbody>
-			</table>
-		</div>
-	</div>
+    <div id="view-tickets" class="view hidden">
+        <h2 class="text-3xl font-bold mb-6 text-white">Bandeja de Entrada (Usuarios)</h2>
+        <div class="bg-gray-800 rounded-xl border border-slate-700 overflow-hidden shadow-lg">
+            <table class="w-full text-left">
+                <thead class="bg-slate-700 text-slate-300"><tr><th class="p-4">Fecha</th><th class="p-4">Usuario / PC</th><th class="p-4">Problema</th><th class="p-4">Telemetría Capturada</th></tr></thead>
+                <tbody id="tickets-body" class="divide-y divide-slate-700"></tbody>
+            </table>
+        </div>
+    </div>
 
-	<div id="view-timeline" class="view hidden">
-		<h2 class="text-3xl font-bold mb-6 text-white">Auditoría y Rollback</h2>
-		<div class="space-y-4" id="timeline-body"></div>
-	</div>
+    <div id="view-timeline" class="view hidden">
+        <h2 class="text-3xl font-bold mb-6 text-white">Auditoría y Rollback</h2>
+        <div class="space-y-4" id="timeline-body"></div>
+    </div>
 
-	<div id="view-config" class="view hidden">
-		<h2 class="text-3xl font-bold mb-6 text-white">Configuración del Gateway</h2>
-		<div class="bg-gray-800 p-6 rounded-xl border border-slate-700 max-w-2xl">
-			<label class="block text-slate-400 mb-2">Ollama URL</label>
-			<input type="text" id="conf-url" class="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white mb-4">
-			<label class="block text-slate-400 mb-2">Modelo Principal</label>
-			<input type="text" id="conf-model" class="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white mb-6">
-			<button class="bg-primary hover:bg-emerald-400 text-slate-900 font-bold py-3 px-6 rounded-lg shadow-lg">Guardar Cambios</button>
-		</div>
-	</div>
+    <div id="view-config" class="view hidden">
+        <h2 class="text-3xl font-bold mb-6 text-white">Configuración del Gateway</h2>
+        <div class="bg-gray-800 p-6 rounded-xl border border-slate-700 max-w-2xl">
+            <label class="block text-slate-400 mb-2">Ollama URL</label>
+            <input type="text" id="conf-url" class="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white mb-4">
+            <label class="block text-slate-400 mb-2">Modelo Principal</label>
+            <input type="text" id="conf-model" class="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white mb-6">
+            <button class="bg-primary hover:bg-emerald-400 text-slate-900 font-bold py-3 px-6 rounded-lg shadow-lg">Guardar Cambios</button>
+        </div>
+    </div>
 
 </main>
 
 <script>
 function nav(target) {
-	document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
-	document.getElementById('view-' + target).classList.remove('hidden');
-	document.querySelectorAll('aside button').forEach(b => {
-		b.classList.remove('bg-slate-700', 'text-white');
-		b.classList.add('text-slate-400');
-	});
-	document.getElementById('btn-' + target).classList.add('bg-slate-700', 'text-white');
-	
-	if(target === 'tickets') loadTickets();
-	if(target === 'timeline') loadTimeline();
+    document.querySelectorAll('.view').forEach(v => v.classList.add('hidden'));
+    document.getElementById('view-' + target).classList.remove('hidden');
+    document.querySelectorAll('aside button').forEach(b => {
+        b.classList.remove('bg-slate-700', 'text-white');
+        b.classList.add('text-slate-400');
+    });
+    document.getElementById('btn-' + target).classList.add('bg-slate-700', 'text-white');
+    
+    if(target === 'tickets') loadTickets();
+    if(target === 'timeline') loadTimeline();
 }
 
 function loadTickets() {
-	fetch('/api/eliza/tickets_list').then(r=>r.json()).then(data => {
-		let html = '';
-		data.forEach(t => {
-			html += '<tr class="hover:bg-slate-750 transition-colors"><td class="p-4 text-sm text-slate-400">'+new Date(t.timestamp).toLocaleString()+'</td><td class="p-4"><p class="font-bold text-white">'+t.user+'</p><p class="text-xs text-slate-400">'+t.pc_name+'</p></td><td class="p-4 text-white">'+t.message+'</td><td class="p-4"><span class="bg-slate-900 text-xs px-3 py-1 rounded text-primary border border-primary/30">'+(t.telemetry || 'Sin datos')+'</span></td></tr>';
-		});
-		document.getElementById('tickets-body').innerHTML = html;
-	});
+    fetch('/api/eliza/tickets_list').then(r=>r.json()).then(data => {
+        let html = '';
+        data.forEach(t => {
+            html += '<tr class="hover:bg-slate-750 transition-colors"><td class="p-4 text-sm text-slate-400">'+new Date(t.timestamp).toLocaleString()+'</td><td class="p-4"><p class="font-bold text-white">'+t.user+'</p><p class="text-xs text-slate-400">'+t.pc_name+'</p></td><td class="p-4 text-white">'+t.message+'</td><td class="p-4"><span class="bg-slate-900 text-xs px-3 py-1 rounded text-primary border border-primary/30">'+(t.telemetry || 'Sin datos')+'</span></td></tr>';
+        });
+        document.getElementById('tickets-body').innerHTML = html;
+    });
 }
 
 function loadTimeline() {
-	fetch('/api/actions').then(r=>r.json()).then(data => {
-		let html = '';
-		data.forEach(a => {
-			let statusColor = a.status === 'executed' ? 'bg-primary' : (a.status === 'rolled_back' ? 'bg-yellow-500' : 'bg-red-500');
-			html += '<div class="flex items-start gap-4 p-4 bg-gray-800 rounded-xl border border-slate-700">';
-			html += '<div class="w-3 h-3 mt-2 rounded-full shadow-[0_0_10px_currentColor] '+statusColor+'"></div>';
-			html += '<div class="flex-1"><p class="text-sm text-slate-400">'+new Date(a.created_at).toLocaleString()+' | PC: '+a.agent_id+'</p>';
-			html += '<p class="text-lg font-bold text-white mt-1">'+a.command+'</p><p class="text-sm text-slate-300 mt-1">'+(a.result || a.status)+'</p></div>';
-			if(a.rollback_command && a.status === 'executed') {
-				html += '<button onclick="doRollback(\''+a.id+'\')" class="px-4 py-2 bg-slate-700 hover:bg-yellow-600 text-white rounded-lg transition-colors text-sm font-medium">↩ Deshacer</button>';
-			}
-			html += '</div>';
-		});
-		document.getElementById('timeline-body').innerHTML = html;
-	});
+    fetch('/api/actions').then(r=>r.json()).then(data => {
+        let html = '';
+        data.forEach(a => {
+            let statusColor = a.status === 'executed' ? 'bg-primary' : (a.status === 'rolled_back' ? 'bg-yellow-500' : 'bg-red-500');
+            html += '<div class="flex items-start gap-4 p-4 bg-gray-800 rounded-xl border border-slate-700">';
+            html += '<div class="w-3 h-3 mt-2 rounded-full shadow-[0_0_10px_currentColor] '+statusColor+'"></div>';
+            html += '<div class="flex-1"><p class="text-sm text-slate-400">'+new Date(a.created_at).toLocaleString()+' | PC: '+a.agent_id+'</p>';
+            html += '<p class="text-lg font-bold text-white mt-1">'+a.command+'</p><p class="text-sm text-slate-300 mt-1">'+(a.result || a.status)+'</p></div>';
+            if(a.rollback_command && a.status === 'executed') {
+                html += '<button onclick="doRollback(\''+a.id+'\')" class="px-4 py-2 bg-slate-700 hover:bg-yellow-600 text-white rounded-lg transition-colors text-sm font-medium">↩ Deshacer</button>';
+            }
+            html += '</div>';
+        });
+        document.getElementById('timeline-body').innerHTML = html;
+    });
 }
 
 function doRollback(id) {
-	if(confirm("¿Estás seguro de deshacer esta acción en la PC del usuario?")) {
-		fetch('/api/rollback?id='+id).then(() => loadTimeline());
-	}
+    if(confirm("¿Estás seguro de deshacer esta acción en la PC del usuario?")) {
+        fetch('/api/rollback?id='+id).then(() => loadTimeline());
+    }
 }
 </script>
 </body>
