@@ -5,7 +5,7 @@ services:
     image: ollama/ollama:latest
     container_name: ollama
     devices:
-      - /dev/dri:/dev/dri # Aceleración por hardware (Intel/AMD)
+      - /dev/dri:/dev/dri
     volumes:
       - ollama_data:/root/.ollama
     ports:
@@ -18,7 +18,7 @@ services:
     build: ./gateway
     container_name: miclaw-gateway
     ports:
-      - "3001:3000" # El Dashboard IT estará en el puerto 3001
+      - "3001:3000"
     volumes:
       - miclaw-data:/app
       - ./gateway/eliza_rules.json:/app/eliza_rules.json
@@ -38,7 +38,7 @@ services:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
     ports:
-      - "3000:8080" # Chat general en el puerto 3000
+      - "3000:8080"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEBUI_AUTH=False
@@ -48,7 +48,6 @@ services:
       - openwebui_data:/app/backend/data
     depends_on:
       - ollama
-      - miclaw-gateway
     restart: unless-stopped
     networks:
       - miclaw-net
