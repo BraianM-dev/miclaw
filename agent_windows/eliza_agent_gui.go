@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/smtp"
 	"os"
@@ -145,12 +146,54 @@ func init() {
 	}
 }
 
+// ======================== REGISTRO AUTOMÁTICO EN GATEWAY ========================
+func getOutboundIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "127.0.0.1"
+	}
+	defer conn.Close()
+	return conn.LocalAddr().(*net.UDPAddr).IP.String()
+}
+
+func registerWithGateway() {
+	ip := getOutboundIP()
+	port := 8081
+	if strings.Contains(httpListenAddr, ":") {
+		fmt.Sscanf(httpListenAddr, ":%d", &port)
+	}
+	reg := map[string]interface{}{
+		"name": pcName,
+		"type": "windows",
+		"ip":   ip,
+		"port": port,
+	}
+	jsonData, _ := json.Marshal(reg)
+	url := strings.TrimRight(gatewayURL, "/") + "/api/agents/register"
+	client := http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		logger.Println("Error registrando agente en gateway:", err)
+	} else {
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			logger.Println("✅ Agente registrado correctamente en gateway")
+		} else {
+			logger.Println("Gateway respondió con estado:", resp.StatusCode)
+		}
+	}
+}
+
+// ======================== MAIN ========================
 func main() {
 	logger.Println("🚀 Iniciando Asistente IT AFE v3.0")
 
 	loadChatHistory()
 	loadLocalRules()
 	go syncRulesPeriodically()
+
+	// Registrar agente en el gateway (sin bloquear)
+	go registerWithGateway()
 
 	appInstance = app.NewWithID("com.afe.itassistant")
 	mainWindow = appInstance.NewWindow("Soporte IT AFE")
@@ -195,14 +238,13 @@ func buildUI() {
 
 	clearButton := widget.NewButtonWithIcon("Limpiar pantalla", theme.DeleteIcon(), func() {
 		uiMutex.Lock()
-		// Limpia la pantalla sin mostrar mensaje adicional
 		chatHistoryLabel.SetText(buildInitialChatText() + "\n")
 		uiMutex.Unlock()
 		scrollToBottom()
 		logger.Println("Pantalla limpiada visualmente")
 	})
 
-	// 8 botones rápidos
+	// Botones rápidos
 	btnLento := widget.NewButtonWithIcon("PC Lenta", theme.WarningIcon(), func() {
 		processMessage("La PC está muy lenta", inputField, sendButton)
 	})
@@ -239,7 +281,6 @@ func buildUI() {
 }
 
 func buildInitialChatText() string {
-	// Sin indicación de administrador ni modo usuario
 	return fmt.Sprintf("🤖 **Asistente IT AFE v3.0**\n✅ Sistema: %s\n👤 Usuario: %s\n💻 Equipo: %s\n📅 Iniciado: %s\n\n¿En qué puedo ayudarte hoy?\n",
 		runtime.GOOS, currentUser, pcName, time.Now().Format("02/01/2006 15:04:05"))
 }
@@ -264,7 +305,6 @@ func processMessage(rawText string, inputField *widget.Entry, sendBtn *widget.Bu
 		time.Sleep(1 * time.Second)
 		var respuesta, categoria string
 
-		// Comandos ocultos (no se anuncia su existencia en la UI)
 		if strings.HasPrefix(msg, "!") {
 			respuesta, categoria = procesarComandoOculto(msg)
 		} else {
@@ -305,7 +345,6 @@ func procesarComandoOculto(cmd string) (string, string) {
 		})
 		return "Pantalla limpiada.", "comando"
 	case "!help", "!ayuda":
-		// Verificar estado de conexión con el cerebro (gateway)
 		gatewayStatus := "❌ Desconectado"
 		if isGatewayReachable() {
 			gatewayStatus = "✅ Conectado"
@@ -323,7 +362,6 @@ URL: %s`, gatewayStatus, gatewayURL)
 		if len(parts) < 2 {
 			return "Uso: !comando <comando PowerShell>", "comando"
 		}
-		// Confirmación para comandos peligrosos
 		confirm := dialog.NewConfirm("Confirmación", "¿Ejecutar comando en PowerShell? Esto puede ser peligroso.", func(ok bool) {
 			if ok {
 				out, err := ejecutarPowerShell(parts[1])
@@ -363,7 +401,6 @@ URL: %s`, gatewayStatus, gatewayURL)
 	}
 }
 
-// isGatewayReachable verifica si el gateway está accesible (endpoint /health)
 func isGatewayReachable() bool {
 	if gatewayURL == "" {
 		return false
@@ -788,7 +825,9 @@ func startCommandListener() {
 	go func() {
 		defer wg.Done()
 		logger.Println("Servidor remoto escuchando en", httpListenAddr)
-		httpServer.ListenAndServe()
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Println("Error en servidor remoto:", err)
+		}
 	}()
 	go func() {
 		<-serverCtx.Done()
