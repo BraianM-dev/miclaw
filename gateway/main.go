@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 // ---------- ESTRUCTURAS ----------
@@ -42,7 +40,7 @@ type Action struct {
 	Command         string     `json:"command"`
 	Parameters      string     `json:"parameters"`
 	RollbackCommand string     `json:"rollback_command"`
-	Status          string     `json:"status"` // pending, approved, executed, rejected, rolled_back
+	Status          string     `json:"status"`
 	PreTelemetry    string     `json:"pre_telemetry"`
 	PostTelemetry   string     `json:"post_telemetry"`
 	CreatedAt       time.Time  `json:"created_at"`
@@ -53,16 +51,16 @@ type Action struct {
 }
 
 type PlannerTask struct {
-	Target   string                 `json:"target"`   // ID del agente o "none"
-	Command  string                 `json:"command"`  // Comando a ejecutar
-	Params   map[string]interface{} `json:"params"`   // Parámetros adicionales
-	Goal     string                 `json:"goal"`     // Propósito de la tarea
-	Rollback string                 `json:"rollback"` // Comando de deshacer
+	Target   string                 `json:"target"`
+	Command  string                 `json:"command"`
+	Params   map[string]interface{} `json:"params"`
+	Goal     string                 `json:"goal"`
+	Rollback string                 `json:"rollback"`
 }
 
 type PlannerResponse struct {
 	Tasks          []PlannerTask `json:"tasks"`
-	DirectResponse string        `json:"direct_response"` // Si no requiere acciones
+	DirectResponse string        `json:"direct_response"`
 }
 
 type ElizaTicket struct {
@@ -84,14 +82,10 @@ type OllamaChatRequest struct {
 	Model    string          `json:"model"`
 	Messages []OllamaMessage `json:"messages"`
 	Stream   bool            `json:"stream"`
-	Format   string          `json:"format"`
 }
 
 type OllamaChatResponse struct {
-	Model     string        `json:"model"`
-	CreatedAt string        `json:"created_at"`
-	Message   OllamaMessage `json:"message"`
-	Done      bool          `json:"done"`
+	Message OllamaMessage `json:"message"`
 }
 
 type DashboardStats struct {
@@ -109,8 +103,8 @@ type RegisterAgentRequest struct {
 
 type ChatRequest struct {
 	Message   string `json:"message"`
-	AgentID   string `json:"agent_id"`   // Opcional, si se quiere ejecutar en un agente específico
-	Requester string `json:"requester"`  // Usuario o PC
+	AgentID   string `json:"agent_id"`
+	Requester string `json:"requester"`
 }
 
 type ChatResponse struct {
@@ -123,7 +117,6 @@ var (
 	config      SystemConfig
 	configMutex sync.RWMutex
 	agentAPIKey string
-	botAPI      *tgbotapi.BotAPI
 )
 
 // ---------- BASE DE DATOS ----------
@@ -135,28 +128,13 @@ func initDB() error {
 	}
 	db.Exec("PRAGMA journal_mode=WAL")
 
-	// Tablas
 	db.Exec(`CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS agents (
-		id TEXT PRIMARY KEY, name TEXT, type TEXT, ip TEXT, port INTEGER, last_seen DATETIME, enabled BOOLEAN
-	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS actions (
-		id TEXT PRIMARY KEY, agent_id TEXT, command TEXT, parameters TEXT, rollback_command TEXT,
-		status TEXT, pre_telemetry TEXT, post_telemetry TEXT, created_at DATETIME,
-		approved_at DATETIME, executed_at DATETIME, result TEXT, requester TEXT
-	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS permissions (
-		command TEXT, agent_id TEXT, mode TEXT, PRIMARY KEY (command, agent_id)
-	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS eliza_tickets (
-		id INTEGER PRIMARY KEY AUTOINCREMENT, pc_name TEXT, user TEXT, timestamp DATETIME,
-		message TEXT, category TEXT, telemetry TEXT
-	)`)
-	db.Exec(`CREATE TABLE IF NOT EXISTS eliza_rules (
-		version TEXT PRIMARY KEY, rules_json TEXT, updated_at DATETIME
-	)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS agents (id TEXT PRIMARY KEY, name TEXT, type TEXT, ip TEXT, port INTEGER, last_seen DATETIME, enabled BOOLEAN)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS actions (id TEXT PRIMARY KEY, agent_id TEXT, command TEXT, parameters TEXT, rollback_command TEXT, status TEXT, pre_telemetry TEXT, post_telemetry TEXT, created_at DATETIME, approved_at DATETIME, executed_at DATETIME, result TEXT, requester TEXT)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS permissions (command TEXT, agent_id TEXT, mode TEXT, PRIMARY KEY (command, agent_id))`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS eliza_tickets (id INTEGER PRIMARY KEY AUTOINCREMENT, pc_name TEXT, user TEXT, timestamp DATETIME, message TEXT, category TEXT, telemetry TEXT)`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS eliza_rules (version TEXT PRIMARY KEY, rules_json TEXT, updated_at DATETIME)`)
 
-	// Cargar reglas iniciales desde archivo si existe
 	loadRulesFromFile()
 	return nil
 }
@@ -293,7 +271,6 @@ func callOllama(model, prompt string) (string, error) {
 			{Role: "user", Content: prompt},
 		},
 		Stream: false,
-		Format: "json",
 	}
 	jsonReq, _ := json.Marshal(reqBody)
 	resp, err := http.Post(url, "application/json", bytes.NewBuffer(jsonReq))
@@ -390,7 +367,6 @@ Solo genera comandos PowerShell válidos para Windows. No inventes comandos inex
 	}
 	var plan PlannerResponse
 	if err := json.Unmarshal([]byte(resp), &plan); err != nil {
-		// Si falla el parseo, asumimos respuesta directa
 		return &PlannerResponse{DirectResponse: resp}, nil
 	}
 	return &plan, nil
@@ -398,17 +374,14 @@ Solo genera comandos PowerShell válidos para Windows. No inventes comandos inex
 
 // ---------- EJECUTOR CON TRIBUNAL ----------
 func ejecutarTarea(actionID string, task PlannerTask, agent Agent, requester string) (string, error) {
-	// Verificar permiso
 	mode, motivo := inferPermissionMode(agent, task.Command)
 	if mode == "strict" {
 		db.Exec(`UPDATE actions SET status='rejected', result=? WHERE id=?`, motivo, actionID)
 		return "", fmt.Errorf("comando bloqueado: %s", motivo)
 	}
 	if mode == "default" {
-		// Ya está en estado pending, espera aprobación manual
 		return "", fmt.Errorf("comando requiere aprobación: %s", motivo)
 	}
-	// bypass: ejecutar directamente
 	output, err := executeOnAgent(agent, task.Command, task.Params)
 	status := "executed"
 	result := output
@@ -439,14 +412,11 @@ Genera una respuesta amigable, clara y útil para el usuario. No menciones tecni
 }
 
 // ---------- HANDLERS API ----------
-
-// Health check
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-// Registrar agente
 func registerAgentHandler(w http.ResponseWriter, r *http.Request) {
 	var reg RegisterAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&reg); err != nil {
@@ -462,14 +432,12 @@ func registerAgentHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(agent)
 }
 
-// Listar agentes
 func agentsListHandler(w http.ResponseWriter, r *http.Request) {
 	agents := getAllAgents()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(agents)
 }
 
-// Ejecutar comando en agente (endpoint interno para dashboard)
 func executeCommandHandler(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AgentID   string                 `json:"agent_id"`
@@ -493,7 +461,6 @@ func executeCommandHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if mode == "default" {
-		// Guardar acción pendiente
 		now := time.Now()
 		_, err := db.Exec(`INSERT INTO actions (id, agent_id, command, parameters, rollback_command, status, created_at, requester)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -506,7 +473,6 @@ func executeCommandHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]string{"status": "pending", "id": actionID, "message": motivo})
 		return
 	}
-	// bypass
 	output, err := executeOnAgent(agent, req.Command, req.Params)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -515,7 +481,6 @@ func executeCommandHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(output))
 }
 
-// Aprobar acción pendiente
 func approveActionHandler(w http.ResponseWriter, r *http.Request) {
 	actionID := r.URL.Query().Get("id")
 	if actionID == "" {
@@ -555,7 +520,6 @@ func approveActionHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-// Rollback
 func rollbackHandler(w http.ResponseWriter, r *http.Request) {
 	actionID := r.URL.Query().Get("id")
 	var agentID, rollbackCmd string
@@ -578,7 +542,6 @@ func rollbackHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"rolled_back"}`))
 }
 
-// Chat principal (planificador -> ejecutor -> sintetizador)
 func chatHandler(w http.ResponseWriter, r *http.Request) {
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -588,7 +551,6 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Requester == "" {
 		req.Requester = "anonymous"
 	}
-	// Guardar ticket inicial
 	ticket := ElizaTicket{
 		PCName:    req.AgentID,
 		User:      req.Requester,
@@ -604,7 +566,6 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	ticketID, _ := res.LastInsertId()
 
-	// Planificar
 	plan, err := planificador(req.Message, req.AgentID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -614,7 +575,6 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(ChatResponse{FinalAnswer: plan.DirectResponse, TicketID: int(ticketID)})
 		return
 	}
-	// Ejecutar tareas secuencialmente
 	var resultados []string
 	for _, task := range plan.Tasks {
 		targetAgent := task.Target
@@ -636,7 +596,6 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 			resultados = append(resultados, fmt.Sprintf("Error al crear acción: %v", err))
 			continue
 		}
-		// Verificar permiso y ejecutar o dejar pendiente
 		mode, _ := inferPermissionMode(agent, task.Command)
 		if mode == "strict" {
 			db.Exec(`UPDATE actions SET status='rejected', result='Bloqueado por tribunal' WHERE id=?`, actionID)
@@ -655,7 +614,6 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 			resultados = append(resultados, fmt.Sprintf("Comando %s ejecutado: %s", task.Command, resText))
 		}
 	}
-	// Sintetizar
 	finalAnswer, err := sintetizador(req.Message, resultados)
 	if err != nil {
 		finalAnswer = "Se ejecutaron acciones, pero no se pudo generar un resumen. Revisa el dashboard."
@@ -663,7 +621,6 @@ func chatHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(ChatResponse{FinalAnswer: finalAnswer, TicketID: int(ticketID)})
 }
 
-// Obtener reglas ELIZA para agentes
 func getElizaRulesHandler(w http.ResponseWriter, r *http.Request) {
 	var version, rulesJSON string
 	err := db.QueryRow(`SELECT version, rules_json FROM eliza_rules ORDER BY updated_at DESC LIMIT 1`).Scan(&version, &rulesJSON)
@@ -675,7 +632,6 @@ func getElizaRulesHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(rulesJSON))
 }
 
-// Actualizar reglas ELIZA (desde dashboard)
 func updateElizaRulesHandler(w http.ResponseWriter, r *http.Request) {
 	var rules map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&rules); err != nil {
@@ -694,12 +650,10 @@ func updateElizaRulesHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// También guardar en archivo para persistencia
 	os.WriteFile("eliza_rules.json", rulesJSON, 0644)
 	w.WriteHeader(http.StatusOK)
 }
 
-// Estadísticas dashboard
 func statsHandler(w http.ResponseWriter, r *http.Request) {
 	var stats DashboardStats
 	db.QueryRow(`SELECT COUNT(DISTINCT pc_name) FROM eliza_tickets`).Scan(&stats.Equipos)
@@ -709,7 +663,6 @@ func statsHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(stats)
 }
 
-// Tickets list
 func ticketsListHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := db.Query(`SELECT id, pc_name, user, timestamp, message, category, telemetry FROM eliza_tickets ORDER BY timestamp DESC LIMIT 50`)
 	defer rows.Close()
@@ -722,7 +675,6 @@ func ticketsListHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(tickets)
 }
 
-// Actions list
 func actionsListHandler(w http.ResponseWriter, r *http.Request) {
 	rows, _ := db.Query(`SELECT id, agent_id, command, status, result, created_at, rollback_command FROM actions ORDER BY created_at DESC LIMIT 50`)
 	defer rows.Close()
@@ -739,7 +691,6 @@ func actionsListHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(actions)
 }
 
-// Config get
 func configGetHandler(w http.ResponseWriter, r *http.Request) {
 	configMutex.RLock()
 	defer configMutex.RUnlock()
@@ -747,7 +698,6 @@ func configGetHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(config)
 }
 
-// Config update
 func configUpdateHandler(w http.ResponseWriter, r *http.Request) {
 	var newConfig SystemConfig
 	if err := json.NewDecoder(r.Body).Decode(&newConfig); err != nil {
@@ -761,7 +711,7 @@ func configUpdateHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// ---------- UI (Tailwind) ----------
+// ---------- UI HTML ----------
 const htmlUI = `<!DOCTYPE html>
 <html lang="es" class="dark">
 <head>
@@ -912,15 +862,6 @@ func main() {
 		agentAPIKey = "ClaveSuperSecretaAFE2026"
 	}
 
-	// Telegram bot opcional
-	if token := os.Getenv("TELEGRAM_TOKEN"); token != "" {
-		bot, err := tgbotapi.NewBotAPI(token)
-		if err == nil {
-			botAPI = bot
-			go startTelegramBot()
-		}
-	}
-
 	http.HandleFunc("/", webUIRoot)
 	http.HandleFunc("/health", healthHandler)
 	http.HandleFunc("/api/agents/register", registerAgentHandler)
@@ -951,55 +892,4 @@ func main() {
 
 	log.Println("🌐 Miclaw Gateway iniciado en puerto 3000")
 	log.Fatal(http.ListenAndServe(":3000", nil))
-}
-
-func startTelegramBot() {
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := botAPI.GetUpdatesChan(u)
-	for update := range updates {
-		if update.Message != nil && update.Message.Text != "" {
-			go func(chatID int64, text string) {
-				resp, _ := chatHandlerInternal(text, "")
-				msg := tgbotapi.NewMessage(chatID, resp)
-				botAPI.Send(msg)
-			}(update.Message.Chat.ID, update.Message.Text)
-		}
-	}
-}
-
-func chatHandlerInternal(message, agentID string) (string, error) {
-	plan, err := planificador(message, agentID)
-	if err != nil {
-		return "Error en el planificador", err
-	}
-	if plan.DirectResponse != "" {
-		return plan.DirectResponse, nil
-	}
-	var resultados []string
-	for _, task := range plan.Tasks {
-		target := task.Target
-		if target == "" {
-			target = agentID
-		}
-		agent, ok := getAgent(target)
-		if !ok {
-			resultados = append(resultados, fmt.Sprintf("Agente %s no disponible", target))
-			continue
-		}
-		mode, _ := inferPermissionMode(agent, task.Command)
-		if mode == "strict" {
-			resultados = append(resultados, fmt.Sprintf("Comando bloqueado: %s", task.Command))
-		} else if mode == "default" {
-			resultados = append(resultados, fmt.Sprintf("Comando requiere aprobación manual: %s", task.Command))
-		} else {
-			out, err := executeOnAgent(agent, task.Command, task.Params)
-			if err != nil {
-				resultados = append(resultados, fmt.Sprintf("Error: %v", err))
-			} else {
-				resultados = append(resultados, out)
-			}
-		}
-	}
-	return sintetizador(message, resultados)
 }
