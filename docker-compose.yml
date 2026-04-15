@@ -1,5 +1,3 @@
-version: '3.9'
-
 # ════════════════════════════════════════════════════════════════
 #  miclaw2 — stack completo
 #  Servicios: ollama · miclaw-gateway · open-webui
