@@ -2,21 +2,22 @@
 FROM golang:1.22-alpine AS builder
 
 # CGO required for go-sqlite3
-RUN apk add --no-cache gcc musl-dev
+RUN apk add --no-cache gcc musl-dev sqlite-dev
 
 WORKDIR /src
 
-# Cache dependencies first (layer-cache friendly)
 COPY go.mod go.sum* ./
 RUN go mod download
 
-# Copy all source files (modular layout)
 COPY . .
 
-# Build fully-static binary
+# Build fully-static binary (con soporte sqlite)
 RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 \
-    go build -ldflags="-s -w -extldflags=-static" \
+    go build -ldflags="-s -w -linkmode external -extldflags '-static'" \
+    -tags 'sqlite_omit_load_extension' \
     -o /out/gateway ./...
+
+# ─── El resto del Dockerfile permanece igual ──────────────────────────────
 
 # ─── Stage 2: minimal runtime ─────────────────────────────────────────────
 FROM alpine:3.20
