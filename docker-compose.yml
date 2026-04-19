@@ -1,6 +1,18 @@
 # ════════════════════════════════════════════════════════════════
-#  miclaw2 — stack completo
-#  Servicios: ollama · miclaw-gateway · open-webui
+#  miclaw2 — stack completo v2
+#
+#  Servicios:
+#    ollama          — LLM local (phi4-mini:3.8b)
+#    ollama-pull     — job único de descarga del modelo
+#    miclaw-gateway  — backend Go (REST API + SSE)
+#    miclaw-frontend — dashboard React (nginx)
+#    open-webui      — interfaz Ollama (opcional)
+#
+#  Inicio rápido:
+#    cp .env.example .env   # ajustar MICLAW_AGENT_KEY
+#    docker compose up -d
+#    # dashboard → http://localhost:${DASHBOARD_PORT:-8080}
+#    # gateway   → http://localhost:${GATEWAY_PORT:-3001}
 # ════════════════════════════════════════════════════════════════
 
 services:
@@ -14,7 +26,7 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
-    # GPU: descomentar si el host tiene GPU compatible
+    # GPU: descomentar si hay GPU NVIDIA disponible
     # deploy:
     #   resources:
     #     reservations:
@@ -49,7 +61,7 @@ services:
     networks:
       - miclaw-net
 
-  # ── Gateway principal ─────────────────────────────────────────
+  # ── Gateway principal (Go backend) ───────────────────────────
   miclaw-gateway:
     build:
       context: ./gateway
@@ -66,7 +78,6 @@ services:
       - gateway_configs:/app/configs
       - gateway_plugins:/app/plugins
       - gateway_logs:/app/logs
-      # Monta configs locales para desarrollo
       - ./gateway/configs:/app/configs:ro
     environment:
       - PORT=3000
@@ -88,7 +99,25 @@ services:
     networks:
       - miclaw-net
 
-  # ── Open-WebUI (interfaz Ollama) ──────────────────────────────
+  # ── Dashboard Frontend (React + nginx) ───────────────────────
+  miclaw-frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=/api
+        - VITE_API_KEY=${MICLAW_AGENT_KEY:-changeme}
+    container_name: miclaw-frontend
+    restart: unless-stopped
+    depends_on:
+      miclaw-gateway:
+        condition: service_healthy
+    ports:
+      - "${DASHBOARD_PORT:-8080}:80"
+    networks:
+      - miclaw-net
+
+  # ── Open-WebUI (interfaz Ollama — opcional) ───────────────────
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
@@ -126,7 +155,7 @@ volumes:
     name: miclaw_openwebui_data
 
 # ════════════════════════════════════════════════════════════════
-#  Red
+#  Red interna
 # ════════════════════════════════════════════════════════════════
 networks:
   miclaw-net:
