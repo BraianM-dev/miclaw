@@ -1,0 +1,28 @@
+{
+  "version": "2.2",
+  "phrases": {
+    "morning": [
+      { "text": "Buenos dias! Lista para ayudarte hoy.", "weight": 1.0 },
+      { "text": "Buen dia! Que necesitas resolver hoy?", "weight": 0.9 },
+      { "text": "Empecemos bien el dia. En que te ayudo?", "weight": 0.8 }
+    ],
+    "afternoon": [
+      { "text": "Buenas tardes! Como va el dia?", "weight": 1.0 },
+      { "text": "Tardes! Algun problema que resolver?", "weight": 0.9 }
+    ],
+    "evening": [
+      { "text": "Buenas noches! Terminando el dia?", "weight": 1.0 },
+      { "text": "Que necesitas antes de cerrar?", "weight": 0.9 }
+    ],
+    "idle": [
+      { "text": "Todo tranquilo. Avisa si necesitas algo.", "weight": 1.0 },
+      { "text": "Sin novedades. Listo cuando me necesites.", "weight": 0.9 }
+    ]
+  },
+  "settings_patch": {
+    "UseEmojis": true,
+    "Personality": "amigable",
+    "NotificationsEnabled": true,
+    "NotificationFrequency": "medium"
+  }
+}
