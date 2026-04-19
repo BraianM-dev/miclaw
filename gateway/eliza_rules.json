@@ -1,0 +1,30 @@
+{
+  "version": "3.0",
+  "reglas": [
+    {
+      "patrones": ["lento", "tranca", "demora", "congeló", "pesada"],
+      "respuestas": [
+        "Analizando telemetría... Mantener la operatividad requiere optimización. Tu solicitud ha sido escalada al Dashboard IT.",
+        "Verificando uso de recursos... Ticket registrado con prioridad. La telemetría ha sido adjuntada automáticamente."
+      ]
+    },
+    {
+      "patrones": ["impresora", "imprime", "tinta", "papel", "atasco"],
+      "respuestas": [
+        "Las fallas en periféricos han sido reportadas. He notificado a Soporte para que revise el spooler de impresión del equipo."
+      ]
+    },
+    {
+      "patrones": ["internet", "wifi", "red", "conexión"],
+      "respuestas": [
+        "Diagnosticando interfaces... El ticket ha sido enviado al Centro de Comando. Si es un fallo general, ya estamos trabajando en ello."
+      ]
+    },
+    {
+      "patrones": ["*"],
+      "respuestas": [
+        "Comprendo la situación. La telemetría de tu equipo y el reporte han sido enviados exitosamente al administrador del sistema."
+      ]
+    }
+  ]
+}
