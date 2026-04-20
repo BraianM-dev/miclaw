@@ -1,36 +1,48 @@
 # ─── Stage 1: build ───────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+# modernc.org/sqlite es pure-Go: CGO_ENABLED=0, sin gcc ni musl-dev.
+# Las dependencias se descargan en la capa de cache (go mod download).
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /src
+
+# Descargar dependencias en capa separada para aprovechar cache de Docker/GHA
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+
+RUN mkdir -p /out && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" \
+    -o /out/gateway .
+
+# ─── Stage 2: runtime mínimo ──────────────────────────────────────────────
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata wget
 
 WORKDIR /app
 
-# Cache de dependencias (layer-friendly)
-COPY package*.json ./
-RUN npm install
+COPY --from=builder /out/gateway /app/gateway
+COPY configs/              /app/configs/
 
-# Código fuente
-COPY . .
+RUN mkdir -p /app/data /app/plugins /app/logs && \
+    chmod 755 /app/gateway
 
-# Variables de build (se inyectan en tiempo de compilación como VITE_*)
-# VITE_API_URL y VITE_API_KEY se sobreescriben en docker-compose si es necesario.
-# Con nginx.conf /api/ → gateway, VITE_API_URL=/api es el default en producción.
-ARG VITE_API_URL=/api
-ARG VITE_API_KEY=changeme
-ENV VITE_API_URL=$VITE_API_URL
-ENV VITE_API_KEY=$VITE_API_KEY
+ENV PORT=3000 \
+    DB_PATH=/app/data/miclaw.db \
+    QUEUE_DB=/app/data/queue.db \
+    MANIFEST_PATH=/app/configs/manifest.json \
+    DATA_DIR=/app/configs \
+    PLUGINS_DIR=/app/plugins \
+    OLLAMA_URL=http://ollama:11434 \
+    OLLAMA_MODEL=phi4-mini:3.8b \
+    MICLAW_AGENT_KEY=changeme \
+    TZ=America/Argentina/Buenos_Aires
 
-RUN npm run build
+EXPOSE 3000
 
-# ─── Stage 2: runtime nginx ──────────────────────────────────────────────
-FROM nginx:1.27-alpine
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget -qO- http://localhost:${PORT}/health || exit 1
 
-# Eliminar configuración default de nginx
-RUN rm /etc/nginx/conf.d/default.conf
-
-COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-EXPOSE 80
-
-HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD wget -qO- http://localhost/health.txt 2>/dev/null || \
-        wget -qO- http://localhost/ -S 2>&1 | grep -q "200 OK" && exit 0 || exit 1
+ENTRYPOINT ["/app/gateway"]
