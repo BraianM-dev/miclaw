@@ -1,153 +1,48 @@
-# ════════════════════════════════════════════════════════════════
-#  miclaw2 — stack completo v2
-#
-#  Las imágenes gateway y frontend se construyen automáticamente
-#  en GitHub Actions y se publican en GHCR.
-#
-#  SETUP INICIAL:
-#  1. Hacer push a GitHub → Actions construye y publica las imágenes
-#  2. En Portainer → Environments → Variables (o .env en el servidor):
-#       GHCR_USER=tu-usuario-github
-#       MICLAW_AGENT_KEY=una-clave-segura
-#  3. Deploy del stack → Portainer descarga las imágenes de GHCR
-#
-#  VARIABLES REQUERIDAS:
-#    GHCR_USER          — usuario de GitHub (dueño del repo)
-#    MICLAW_AGENT_KEY   — clave compartida entre agentes y gateway
-#
-#  VARIABLES OPCIONALES:
-#    GATEWAY_PORT    (default: 3001)
-#    DASHBOARD_PORT  (default: 8080)
-#    WEBUI_PORT      (default: 3000)
-#    OLLAMA_MODEL    (default: phi4-mini:3.8b)
-#    TAG             (default: latest)
-#    TZ              (default: America/Argentina/Buenos_Aires)
-# ════════════════════════════════════════════════════════════════
+# ─── Stage 1: build ───────────────────────────────────────────────────────
+# modernc.org/sqlite es pure-Go: CGO_ENABLED=0, sin gcc ni musl-dev.
+# Las dependencias se descargan en la capa de cache (go mod download).
+FROM golang:1.25-alpine AS builder
 
-services:
+WORKDIR /src
 
-  # ── Ollama (LLM local) ────────────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    restart: unless-stopped
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    # GPU: descomentar si el host tiene GPU NVIDIA
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-    environment:
-      - OLLAMA_KEEP_ALIVE=24h
-      - OLLAMA_NUM_PARALLEL=2
-    healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    networks:
-      - miclaw-net
+# Descargar dependencias en capa separada para aprovechar cache de Docker/GHA
+COPY go.mod go.sum ./
+RUN go mod download
 
-  # ── Pull del modelo al iniciar (job único) ────────────────────
-  ollama-pull:
-    image: ollama/ollama:latest
-    container_name: ollama-pull
-    restart: "no"
-    depends_on:
-      ollama:
-        condition: service_healthy
-    entrypoint: >
-      sh -c "ollama pull ${OLLAMA_MODEL:-phi4-mini:3.8b}"
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    networks:
-      - miclaw-net
+COPY . .
 
-  # ── Gateway (imagen pre-construida en GHCR) ───────────────────
-  miclaw-gateway:
-    image: ghcr.io/${GHCR_USER}/miclaw-gateway:${TAG:-latest}
-    container_name: miclaw-gateway
-    restart: unless-stopped
-    depends_on:
-      ollama:
-        condition: service_healthy
-    ports:
-      - "${GATEWAY_PORT:-3001}:3000"
-    volumes:
-      - gateway_data:/app/data
-      - gateway_logs:/app/logs
-    environment:
-      - PORT=3000
-      - DB_PATH=/app/data/miclaw.db
-      - QUEUE_DB=/app/data/queue.db
-      - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-phi4-mini:3.8b}
-      - MICLAW_AGENT_KEY=${MICLAW_AGENT_KEY:-changeme}
-      - TZ=${TZ:-America/Argentina/Buenos_Aires}
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
-      interval: 20s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
-    networks:
-      - miclaw-net
+RUN mkdir -p /out && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" \
+    -o /out/gateway .
 
-  # ── Dashboard Frontend (imagen pre-construida en GHCR) ────────
-  miclaw-frontend:
-    image: ghcr.io/${GHCR_USER}/miclaw-frontend:${TAG:-latest}
-    container_name: miclaw-frontend
-    restart: unless-stopped
-    depends_on:
-      miclaw-gateway:
-        condition: service_healthy
-    ports:
-      - "${DASHBOARD_PORT:-8080}:80"
-    networks:
-      - miclaw-net
+# ─── Stage 2: runtime mínimo ──────────────────────────────────────────────
+FROM alpine:3.20
 
-  # ── Open-WebUI (interfaz Ollama — opcional) ───────────────────
-  open-webui:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
-    restart: unless-stopped
-    depends_on:
-      ollama:
-        condition: service_healthy
-    ports:
-      - "${WEBUI_PORT:-3000}:8080"
-    volumes:
-      - openwebui_data:/app/backend/data
-    environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - WEBUI_AUTH=False
-    networks:
-      - miclaw-net
+RUN apk add --no-cache ca-certificates tzdata wget
 
-# ════════════════════════════════════════════════════════════════
-#  Volumes
-# ════════════════════════════════════════════════════════════════
-volumes:
-  ollama_data:
-    name: miclaw_ollama_data
-  gateway_data:
-    name: miclaw_gateway_data
-  gateway_logs:
-    name: miclaw_gateway_logs
-  openwebui_data:
-    name: miclaw_openwebui_data
+WORKDIR /app
 
-# ════════════════════════════════════════════════════════════════
-#  Red interna
-# ════════════════════════════════════════════════════════════════
-networks:
-  miclaw-net:
-    name: miclaw-net
-    driver: bridge
+COPY --from=builder /out/gateway /app/gateway
+COPY configs/              /app/configs/
+
+RUN mkdir -p /app/data /app/plugins /app/logs && \
+    chmod 755 /app/gateway
+
+ENV PORT=3000 \
+    DB_PATH=/app/data/miclaw.db \
+    QUEUE_DB=/app/data/queue.db \
+    MANIFEST_PATH=/app/configs/manifest.json \
+    DATA_DIR=/app/configs \
+    PLUGINS_DIR=/app/plugins \
+    OLLAMA_URL=http://ollama:11434 \
+    OLLAMA_MODEL=phi4-mini:3.8b \
+    MICLAW_AGENT_KEY=changeme \
+    TZ=America/Argentina/Buenos_Aires
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD wget -qO- http://localhost:${PORT}/health || exit 1
+
+ENTRYPOINT ["/app/gateway"]
