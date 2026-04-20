@@ -1,7 +1,7 @@
 # ─── Stage 1: build ───────────────────────────────────────────────────────
 # modernc.org/sqlite es pure-Go: CGO_ENABLED=0, sin gcc ni musl-dev.
 # Las dependencias se descargan en la capa de cache (go mod download).
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
