@@ -5,7 +5,7 @@ WORKDIR /app
 
 # Cache de dependencias (layer-friendly)
 COPY package*.json ./
-RUN npm ci --prefer-offline
+RUN npm install
 
 # Código fuente
 COPY . .
