@@ -1,9 +1,5 @@
 package api
 
-// events.go — SSE hub para push de eventos en tiempo real al frontend.
-// No usa gorilla/websocket: usa Server-Sent Events (EventSource nativo en browsers).
-// Ventajas: reconexión automática, sin handshake, funciona detrás de proxies HTTP/1.1.
-
 import (
 	"encoding/json"
 	"fmt"
@@ -13,100 +9,75 @@ import (
 	"time"
 )
 
-// EventType identifica el tipo de evento SSE.
-type EventType string
-
+// Event type constants used by the SSE hub.
 const (
-	EvAgentUpdate   EventType = "agent_update"
-	EvAlert         EventType = "alert"
-	EvCommandResult EventType = "command_result"
-	EvTicketUpdate  EventType = "ticket_update"
-	EvHeartbeat     EventType = "heartbeat"
+	EvAgentUpdate   = "agent_update"
+	EvHeartbeat     = "heartbeat"
+	EvAlert         = "alert"
+	EvCommandResult = "command_result"
+	EvTicketUpdate  = "ticket_update"
 )
 
-// SSEEvent es el payload enviado a través del stream.
-type SSEEvent struct {
-	Type    EventType `json:"type"`
-	Payload any       `json:"payload"`
-	TS      time.Time `json:"ts"`
+// Event is sent to all SSE subscribers.
+type Event struct {
+	Type    string `json:"type"`
+	Payload any    `json:"payload"`
+	TS      string `json:"ts"`
 }
 
-// Hub gestiona subscriptores SSE y distribuye eventos a todos.
+// Hub manages SSE client connections and broadcasts events.
 type Hub struct {
 	mu      sync.RWMutex
-	clients map[chan []byte]struct{}
-	bus     chan []byte
+	clients map[chan Event]struct{}
 }
 
-// NewHub crea e inicia el hub en background.
+// NewHub creates a new SSE hub.
 func NewHub() *Hub {
-	h := &Hub{
-		clients: make(map[chan []byte]struct{}),
-		bus:     make(chan []byte, 512),
-	}
-	go h.run()
-	return h
+	return &Hub{clients: make(map[chan Event]struct{})}
 }
 
-func (h *Hub) run() {
-	for msg := range h.bus {
-		h.mu.RLock()
-		for ch := range h.clients {
-			select {
-			case ch <- msg:
-			default:
-				// cliente lento — drop, no bloquear el broadcast
-			}
+// Broadcast sends an event to all connected SSE clients.
+func (h *Hub) Broadcast(evType string, payload any) {
+	ev := Event{
+		Type:    evType,
+		Payload: payload,
+		TS:      time.Now().UTC().Format(time.RFC3339),
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for ch := range h.clients {
+		select {
+		case ch <- ev:
+		default:
+			// Drop if client is slow
 		}
-		h.mu.RUnlock()
 	}
 }
 
-// Subscribe registra un canal nuevo y devuelve el canal del suscriptor.
-func (h *Hub) Subscribe() chan []byte {
-	ch := make(chan []byte, 32)
+func (h *Hub) subscribe() chan Event {
+	ch := make(chan Event, 32)
 	h.mu.Lock()
 	h.clients[ch] = struct{}{}
 	h.mu.Unlock()
-	slog.Debug("SSE client subscribed", "total", len(h.clients))
 	return ch
 }
 
-// Unsubscribe elimina el canal del hub.
-func (h *Hub) Unsubscribe(ch chan []byte) {
+func (h *Hub) unsubscribe(ch chan Event) {
 	h.mu.Lock()
 	delete(h.clients, ch)
 	h.mu.Unlock()
 	close(ch)
 }
 
-// Broadcast serializa y envía un evento a todos los clientes suscritos.
-func (h *Hub) Broadcast(evType EventType, payload any) {
-	evt := SSEEvent{Type: evType, Payload: payload, TS: time.Now().UTC()}
-	data, err := json.Marshal(evt)
-	if err != nil {
-		slog.Error("hub: marshal event", "error", err)
-		return
-	}
-	select {
-	case h.bus <- data:
-	default:
-		slog.Warn("hub: bus full, dropping event", "type", evType)
-	}
-}
-
-// ClientCount devuelve el número de clientes SSE conectados.
-func (h *Hub) ClientCount() int {
+// ConnectedClients returns the number of active SSE connections.
+func (h *Hub) ConnectedClients() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
 }
 
-// ─── HTTP Handler ──────────────────────────────────────────────────────────
-
-// handleSSE upgrades the connection to an SSE stream.
-// No requiere auth especial — la API key se valida vía authMiddleware en la ruta padre.
-func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
+// handleSSE streams server-sent events to the client.
+func (h *Hub) handleSSE(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -116,35 +87,37 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // deshabilitar buffering de nginx
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.WriteHeader(http.StatusOK)
+	w.Header().Set("X-Accel-Buffering", "no") // Disable nginx buffering
 
-	// Comentario inicial para confirmar conexión al cliente.
-	fmt.Fprintf(w, ": connected\n\n")
+	ch := h.subscribe()
+	defer h.unsubscribe(ch)
+
+	slog.Debug("SSE client connected", "remote", r.RemoteAddr)
+
+	// Send initial connection event
+	fmt.Fprintf(w, "data: {\"type\":\"connected\",\"ts\":%q}\n\n", time.Now().UTC().Format(time.RFC3339))
 	flusher.Flush()
 
-	ch := s.deps.Hub.Subscribe()
-	defer s.deps.Hub.Unsubscribe(ch)
-
-	// Keep-alive ping cada 25 s (evita timeout de proxies).
 	ping := time.NewTicker(25 * time.Second)
 	defer ping.Stop()
 
 	for {
 		select {
-		case msg, ok := <-ch:
+		case ev, ok := <-ch:
 			if !ok {
 				return
 			}
-			fmt.Fprintf(w, "data: %s\n\n", msg)
+			data, err := json.Marshal(ev)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
-
 		case <-ping.C:
 			fmt.Fprintf(w, ": ping\n\n")
 			flusher.Flush()
-
 		case <-r.Context().Done():
+			slog.Debug("SSE client disconnected", "remote", r.RemoteAddr)
 			return
 		}
 	}

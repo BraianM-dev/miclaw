@@ -1,7 +1,11 @@
+# ─── Stage 1: build ───────────────────────────────────────────────────────
+# modernc.org/sqlite es pure-Go: CGO_ENABLED=0, sin gcc ni musl-dev.
+# Las dependencias se descargan en la capa de cache (go mod download).
 FROM golang:1.25-alpine AS builder
 
 WORKDIR /src
 
+# Descargar dependencias en capa separada para aprovechar cache de Docker/GHA
 COPY go.mod go.sum ./
 RUN go mod download
 
@@ -12,6 +16,7 @@ RUN mkdir -p /out && \
     go build -ldflags="-s -w" \
     -o /out/gateway .
 
+# ─── Stage 2: runtime mínimo ──────────────────────────────────────────────
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates tzdata wget
@@ -19,7 +24,7 @@ RUN apk add --no-cache ca-certificates tzdata wget
 WORKDIR /app
 
 COPY --from=builder /out/gateway /app/gateway
-COPY configs/ /app/configs/
+COPY configs/              /app/configs/
 
 RUN mkdir -p /app/data /app/plugins /app/logs && \
     chmod 755 /app/gateway

@@ -2,149 +2,164 @@ package api
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"miclaw-gateway/ai"
 	"miclaw-gateway/db"
-	"miclaw-gateway/ollama"
-	"miclaw-gateway/plugins"
+	"miclaw-gateway/network"
 	"miclaw-gateway/queue"
 	"miclaw-gateway/rules"
-	"miclaw-gateway/updates"
 )
 
-// ─── Deps & Server ─────────────────────────────────────────────────────────
+// ── Deps & Server ──────────────────────────────────────────────────────────
 
+// Deps holds all dependencies injected into the API layer.
 type Deps struct {
-	DB      *db.DB
-	Ollama  *ollama.Client
-	Rules   *rules.Engine
-	Plugins *plugins.Loader
-	Queue   *queue.Queue
-	Updates *updates.Manager
-	Hub     *Hub
-	APIKey  string
+	DB     *db.DB
+	Hub    *Hub
+	Rules  *rules.Engine
+	AI     *ai.Client
+	Queue  *queue.Queue
+	APIKey string
 }
 
+// Server is the HTTP server with all dependencies.
 type Server struct {
-	deps    Deps
-	limiter *ipLimiter
+	deps Deps
 }
 
-func NewServer(d Deps) *Server {
-	return &Server{deps: d, limiter: newIPLimiter(200)}
+// NewServer creates a new API server.
+func NewServer(deps Deps) *Server {
+	return &Server{deps: deps}
 }
 
-// Routes devuelve el mux HTTP completamente configurado.
+// Routes builds the HTTP mux.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// ── Públicas ──────────────────────────────────────────────────────────
-	mux.HandleFunc("GET /health", s.handleHealth)
+	// Public
+	mux.HandleFunc("GET /health", s.health)
 
-	// ── Protegidas con API Key ─────────────────────────────────────────────
-	protected := http.NewServeMux()
+	// Agents
+	mux.HandleFunc("POST /agents/register", s.auth(s.registerAgent))
+	mux.HandleFunc("POST /agents/heartbeat", s.auth(s.heartbeat))
+	mux.HandleFunc("GET /agents", s.auth(s.listAgents))
+	mux.HandleFunc("GET /agents/{id}", s.auth(s.getAgent))
+	mux.HandleFunc("DELETE /agents/{id}", s.auth(s.deleteAgent))
 
-	// Agentes
-	protected.HandleFunc("POST /agents/register", s.handleAgentsRegister)
-	protected.HandleFunc("POST /agents/heartbeat", s.handleAgentsHeartbeat)
-	protected.HandleFunc("GET /agents", s.handleAgentsList)
-	protected.HandleFunc("GET /agents/{id}", s.handleAgentsGet)
+	// Commands
+	mux.HandleFunc("POST /commands", s.auth(s.createCommand))
+	mux.HandleFunc("GET /commands", s.auth(s.listCommands))
+	mux.HandleFunc("GET /commands/{id}", s.auth(s.getCommand))
 
-	// Comandos remotos
-	protected.HandleFunc("POST /commands", s.handleCommandCreate)
-	protected.HandleFunc("GET /commands/{id}", s.handleCommandGet)
-	protected.HandleFunc("GET /commands", s.handleCommandsList)
-
-	// Alertas
-	protected.HandleFunc("POST /alerts", s.handleAlertCreate)
-	protected.HandleFunc("GET /alerts", s.handleAlertsList)
-	protected.HandleFunc("PATCH /alerts/{id}", s.handleAlertAck)
+	// Alerts
+	mux.HandleFunc("POST /alerts", s.auth(s.createAlert))
+	mux.HandleFunc("GET /alerts", s.auth(s.listAlerts))
+	mux.HandleFunc("PATCH /alerts/{id}", s.auth(s.updateAlert))
 
 	// Tickets
-	protected.HandleFunc("POST /tickets", s.handleTicketsCreate)
-	protected.HandleFunc("GET /tickets", s.handleTicketsList)
-	protected.HandleFunc("GET /tickets/{id}", s.handleTicketsGet)
-	protected.HandleFunc("PATCH /tickets/{id}", s.handleTicketsPatch)
-	protected.HandleFunc("POST /tickets/{id}/messages", s.handleTicketMessageCreate)
-	protected.HandleFunc("GET /tickets/{id}/messages", s.handleTicketMessagesList)
+	mux.HandleFunc("POST /tickets", s.auth(s.createTicket))
+	mux.HandleFunc("GET /tickets", s.auth(s.listTickets))
+	mux.HandleFunc("GET /tickets/{id}", s.auth(s.getTicket))
+	mux.HandleFunc("PATCH /tickets/{id}", s.auth(s.updateTicket))
+	mux.HandleFunc("POST /tickets/{id}/messages", s.auth(s.addMessage))
+	mux.HandleFunc("GET /tickets/{id}/messages", s.auth(s.getMessages))
 
-	// IA
-	protected.HandleFunc("POST /ai/query", s.handleAIQuery)
+	// AI
+	mux.HandleFunc("POST /ai/query", s.auth(s.aiQuery))
 
 	// Dashboard
-	protected.HandleFunc("GET /dashboard/stats", s.handleDashboardStats)
+	mux.HandleFunc("GET /dashboard/stats", s.auth(s.dashboardStats))
 
-	// Network (MPLS locations)
-	protected.HandleFunc("GET /network/locations", s.handleNetworkLocations)
+	// Network
+	mux.HandleFunc("GET /network/locations", s.auth(s.networkLocations))
 
-	// SSE — push events al frontend
-	protected.HandleFunc("GET /events", s.handleSSE)
+	// Settings
+	mux.HandleFunc("GET /settings", s.auth(s.getSettings))
+	mux.HandleFunc("PUT /settings", s.auth(s.saveSettings))
 
-	// Legacy / compatibilidad
-	protected.HandleFunc("GET /updates/manifest", s.handleUpdatesManifest)
-	protected.HandleFunc("GET /knowledge/sync", s.handleKnowledgeSync)
-	protected.HandleFunc("POST /knowledge", s.handleKnowledgeUpsert)
-	protected.HandleFunc("POST /plugins/run", s.handlePluginRun)
-	protected.HandleFunc("GET /queue/stats", s.handleQueueStats)
+	// Rules (read-only inspection)
+	mux.HandleFunc("GET /rules", s.auth(s.listRules))
 
-	mux.Handle("/", s.authMiddleware(protected))
+	// Knowledge
+	mux.HandleFunc("POST /knowledge", s.auth(s.upsertKnowledge))
+	mux.HandleFunc("GET /knowledge", s.auth(s.listKnowledge))
 
-	var h http.Handler = mux
-	h = rateLimitMiddleware(s.limiter)(h)
-	h = loggingMiddleware(h)
-	h = recoveryMiddleware(h)
-	h = corsMiddleware(h)
-	return h
+	// Queue
+	mux.HandleFunc("GET /queue/stats", s.auth(s.queueStats))
+
+	// SSE stream
+	mux.HandleFunc("GET /events", s.auth(s.deps.Hub.handleSSE))
+
+	// Legacy compat
+	mux.HandleFunc("GET /updates/manifest", s.auth(s.manifest))
+	mux.HandleFunc("GET /knowledge/sync", s.auth(s.knowledgeSync))
+
+	return cors(logger(mux))
 }
 
-// ─── Health ────────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+func jsonOK(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(v)
+}
+
+func jsonError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+func decode(r *http.Request, v any) error {
+	return json.NewDecoder(r.Body).Decode(v)
+}
+
+func intParam(r *http.Request, key string, def int) int {
+	v := r.URL.Query().Get(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
+// ── Handlers ───────────────────────────────────────────────────────────────
+
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, map[string]any{
-		"status":  "ok",
-		"time":    time.Now().UTC().Format(time.RFC3339),
-		"clients": s.deps.Hub.ClientCount(),
+		"status":   "ok",
+		"ts":       time.Now().UTC().Format(time.RFC3339),
+		"version":  "2.0.0",
+		"ollama":   s.deps.AI.Healthy(),
+		"clients":  s.deps.Hub.ConnectedClients(),
 	})
 }
 
-// ─── Dashboard ─────────────────────────────────────────────────────────────
+// ── Agents ─────────────────────────────────────────────────────────────────
 
-func (s *Server) handleDashboardStats(w http.ResponseWriter, _ *http.Request) {
-	stats, err := s.deps.DB.GetDashboardStats()
-	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	jsonOK(w, stats)
-}
-
-// ─── Network ───────────────────────────────────────────────────────────────
-
-func (s *Server) handleNetworkLocations(w http.ResponseWriter, _ *http.Request) {
-	jsonOK(w, AllLocations())
-}
-
-// ─── Agents ────────────────────────────────────────────────────────────────
-
-func (s *Server) handleAgentsRegister(w http.ResponseWriter, r *http.Request) {
+func (s *Server) registerAgent(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name     string `json:"name"`
-		Type     string `json:"type"`
 		IP       string `json:"ip"`
 		Port     int    `json:"port"`
 		Hostname string `json:"hostname"`
 		Version  string `json:"version"`
-		AgentKey string `json:"agent_key"` // clave que el agente usa en su propio HTTP server
+		AgentKey string `json:"agent_key"`
+		Type     string `json:"type"`
 	}
-	if !decodeJSON(w, r, &req) {
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
 	if req.Name == "" || req.IP == "" {
@@ -158,137 +173,172 @@ func (s *Server) handleAgentsRegister(w http.ResponseWriter, r *http.Request) {
 		req.Type = "frank"
 	}
 
-	loc, gw := ResolveRoute(req.IP)
-	agentID := db.SanitizeID(req.Name, req.IP)
+	loc, gw := network.Resolve(req.IP)
+	id := fmt.Sprintf("frank-%s", req.IP)
 
 	agent := db.Agent{
-		ID:       agentID,
+		ID:       id,
 		Name:     req.Name,
 		Type:     req.Type,
 		IP:       req.IP,
 		Port:     req.Port,
 		Hostname: req.Hostname,
+		Version:  req.Version,
+		AgentKey: req.AgentKey,
 		Location: loc,
 		Gateway:  gw,
 		Status:   "ok",
-		Version:  req.Version,
-		AgentKey: req.AgentKey,
-		LastSeen: time.Now(),
+		LastSeen: time.Now().UTC(),
 		Enabled:  true,
 	}
 	if err := s.deps.DB.UpsertAgent(agent); err != nil {
-		jsonError(w, "db error: "+err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-
-	slog.Info("agent registered", "id", agentID, "ip", req.IP, "location", loc)
-
-	s.deps.Hub.Broadcast(EvAgentUpdate, agent.Public())
+	s.deps.Hub.Broadcast(EvAgentUpdate, agent)
+	slog.Info("agent registered", "id", id, "ip", req.IP, "location", loc)
 	jsonOK(w, map[string]any{
-		"id":       agentID,
+		"id":       id,
 		"location": loc,
 		"gateway":  gw,
 	})
 }
 
-func (s *Server) handleAgentsHeartbeat(w http.ResponseWriter, r *http.Request) {
+func (s *Server) heartbeat(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		AgentID  string  `json:"agent_id"`
-		Name     string  `json:"name"`
-		IP       string  `json:"ip"`
-		Hostname string  `json:"hostname"`
-		Version  string  `json:"version"`
-		CPUPct   float64 `json:"cpu_pct"`
-		MemPct   float64 `json:"mem_pct"`
-		DiskPct  float64 `json:"disk_pct"`
-		Status   string  `json:"status"`
+		AgentID string  `json:"agent_id"`
+		Name    string  `json:"name"`
+		IP      string  `json:"ip"`
+		CPU     float64 `json:"cpu_pct"`
+		Mem     float64 `json:"mem_pct"`
+		Disk    float64 `json:"disk_pct"`
+		Status  string  `json:"status"`
+		Version string  `json:"version"`
 	}
-	if !decodeJSON(w, r, &req) {
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	if req.IP == "" {
-		jsonError(w, "ip is required", http.StatusBadRequest)
-		return
-	}
-
-	agentID := req.AgentID
-	if agentID == "" && req.Name != "" {
-		agentID = db.SanitizeID(req.Name, req.IP)
+	if req.AgentID == "" {
+		if req.IP != "" {
+			req.AgentID = "frank-" + req.IP
+		} else {
+			jsonError(w, "agent_id required", http.StatusBadRequest)
+			return
+		}
 	}
 	if req.Status == "" {
 		req.Status = "ok"
 	}
 
-	// Actualizar last_seen + status en agents.
-	_ = s.deps.DB.UpdateAgentHeartbeat(agentID, req.Status, time.Now())
+	// Update agent status
+	s.deps.DB.SetAgentStatus(req.AgentID, req.Status)
 
-	// Guardar muestra de métricas.
-	_ = s.deps.DB.InsertHeartbeat(db.Heartbeat{
-		AgentID: agentID,
+	// Insert heartbeat
+	hb := db.Heartbeat{
+		AgentID: req.AgentID,
 		IP:      req.IP,
-		CPUPct:  req.CPUPct,
-		MemPct:  req.MemPct,
-		DiskPct: req.DiskPct,
+		CPU:     req.CPU,
+		Mem:     req.Mem,
+		Disk:    req.Disk,
 		Status:  req.Status,
-	})
+		TS:      time.Now().UTC(),
+	}
+	s.deps.DB.InsertHeartbeat(hb)
 
-	s.deps.Hub.Broadcast(EvHeartbeat, map[string]any{
-		"agent_id": agentID,
-		"status":   req.Status,
-		"cpu_pct":  req.CPUPct,
-		"mem_pct":  req.MemPct,
-		"disk_pct": req.DiskPct,
-	})
+	// Auto-alert on high resource usage
+	settings, _ := s.deps.DB.GetSettings()
+	if req.CPU >= float64(settings.AlertCPUThreshold) {
+		s.deps.DB.CreateAlert(db.Alert{
+			AgentID: req.AgentID,
+			Level:   "warning",
+			Source:  "agent",
+			Message: fmt.Sprintf("CPU alto: %.1f%%", req.CPU),
+			Details: fmt.Sprintf("Agente %s reportó CPU al %.1f%%", req.AgentID, req.CPU),
+		})
+	}
+	if req.Mem >= float64(settings.AlertMemThreshold) {
+		s.deps.DB.CreateAlert(db.Alert{
+			AgentID: req.AgentID,
+			Level:   "warning",
+			Source:  "agent",
+			Message: fmt.Sprintf("Memoria alta: %.1f%%", req.Mem),
+			Details: fmt.Sprintf("Agente %s reportó memoria al %.1f%%", req.AgentID, req.Mem),
+		})
+	}
+	if req.Disk >= float64(settings.AlertDiskThreshold) {
+		s.deps.DB.CreateAlert(db.Alert{
+			AgentID: req.AgentID,
+			Level:   "critical",
+			Source:  "agent",
+			Message: fmt.Sprintf("Disco lleno: %.1f%%", req.Disk),
+			Details: fmt.Sprintf("Agente %s reportó disco al %.1f%%", req.AgentID, req.Disk),
+		})
+	}
 
-	// Devolver comandos pendientes para este agente.
-	cmds, _ := s.deps.DB.ListCommands(agentID, 5)
+	s.deps.Hub.Broadcast(EvHeartbeat, hb)
+
+	// Return pending commands for this agent
+	cmds, _ := s.deps.DB.ListCommands(req.AgentID, 10)
 	var pending []db.Command
 	for _, c := range cmds {
 		if c.Status == "pending" {
 			pending = append(pending, c)
 		}
 	}
-	jsonOK(w, map[string]any{"status": "ok", "pending_commands": pending})
+	jsonOK(w, map[string]any{"commands": pending})
 }
 
-func (s *Server) handleAgentsList(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
 	agents, err := s.deps.DB.ListAgents()
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	// Devolver vista pública (sin agent_key).
-	pub := make([]db.AgentPublic, 0, len(agents))
-	for _, a := range agents {
-		pub = append(pub, a.Public())
+	if agents == nil {
+		agents = []db.Agent{}
 	}
-	jsonOK(w, pub)
+	jsonOK(w, agents)
 }
 
-func (s *Server) handleAgentsGet(w http.ResponseWriter, r *http.Request) {
+func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	agent, ok := s.deps.DB.GetAgent(id)
-	if !ok {
-		jsonError(w, "agent not found", http.StatusNotFound)
+	agent, err := s.deps.DB.GetAgent(id)
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
 		return
 	}
-	heartbeats, _ := s.deps.DB.RecentHeartbeats(id, 20)
+	heartbeats, _ := s.deps.DB.GetHeartbeats(id, intParam(r, "limit", 50))
+	if heartbeats == nil {
+		heartbeats = []db.Heartbeat{}
+	}
 	jsonOK(w, map[string]any{
-		"agent":      agent.Public(),
+		"agent":      agent,
 		"heartbeats": heartbeats,
 	})
 }
 
-// ─── Remote Commands ───────────────────────────────────────────────────────
+func (s *Server) deleteAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.deps.DB.DeleteAgent(id); err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	s.deps.Hub.Broadcast(EvAgentUpdate, map[string]any{"id": id, "deleted": true})
+	jsonOK(w, map[string]string{"status": "deleted"})
+}
 
-func (s *Server) handleCommandCreate(w http.ResponseWriter, r *http.Request) {
+// ── Commands ───────────────────────────────────────────────────────────────
+
+func (s *Server) createCommand(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		AgentID   string `json:"agent_id"`
 		Command   string `json:"command"`
-		Params    string `json:"params"`
+		Params    any    `json:"params"`
 		Requester string `json:"requester"`
 	}
-	if !decodeJSON(w, r, &req) {
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
 	if req.AgentID == "" || req.Command == "" {
@@ -296,324 +346,261 @@ func (s *Server) handleCommandCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	agent, ok := s.deps.DB.GetAgent(req.AgentID)
-	if !ok {
-		jsonError(w, "agent not found", http.StatusNotFound)
-		return
-	}
-
-	if req.Requester == "" {
-		req.Requester = "ui"
-	}
-	if req.Params == "" {
-		req.Params = "{}"
-	}
-
-	cmdID := fmt.Sprintf("cmd-%d", time.Now().UnixNano())
+	params, _ := json.Marshal(req.Params)
+	cmdID := uuid.New().String()
 	cmd := db.Command{
 		ID:        cmdID,
 		AgentID:   req.AgentID,
 		Command:   req.Command,
-		Params:    req.Params,
+		Params:    string(params),
 		Status:    "pending",
 		Requester: req.Requester,
 	}
-	if err := s.deps.DB.InsertCommand(cmd); err != nil {
-		jsonError(w, "db error: "+err.Error(), http.StatusInternalServerError)
+	if err := s.deps.DB.CreateCommand(cmd); err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 
-	// Intentar entrega inmediata al agente en background.
-	go s.deliverCommand(agent, cmd)
+	// Deliver to agent asynchronously
+	go s.deliverCommand(cmd, req.Params)
 
-	jsonOK(w, map[string]any{"id": cmdID, "status": "pending"})
+	jsonOK(w, map[string]string{"id": cmdID, "status": "pending"})
 }
 
-// deliverCommand intenta enviar un comando al agente Frank vía HTTP.
-func (s *Server) deliverCommand(agent db.Agent, cmd db.Command) {
-	_ = s.deps.DB.UpdateCommandResult(cmd.ID, "sent", "")
-
-	agentURL := fmt.Sprintf("http://%s:%d/execute", agent.IP, agent.Port)
-	payload := map[string]any{
-		"action": cmd.Command,
-		"params": map[string]string{},
-	}
-	if cmd.Params != "" && cmd.Params != "{}" {
-		var p any
-		if err := json.Unmarshal([]byte(cmd.Params), &p); err == nil {
-			payload["params"] = p
-		}
-	}
-
-	body, _ := json.Marshal(payload)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, agentURL, bytes.NewReader(body))
+func (s *Server) deliverCommand(cmd db.Command, params any) {
+	agent, err := s.deps.DB.GetAgent(cmd.AgentID)
 	if err != nil {
-		s.failCommand(cmd.ID, "request build failed: "+err.Error())
+		s.deps.DB.UpdateCommand(cmd.ID, "failed", "agent not found")
 		return
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if agent.AgentKey != "" {
-		httpReq.Header.Set("X-API-Key", agent.AgentKey)
-	}
 
-	resp, err := http.DefaultClient.Do(httpReq)
+	body, _ := json.Marshal(map[string]any{
+		"action": cmd.Command,
+		"params": params,
+	})
+
+	url := fmt.Sprintf("http://%s:%d/execute", agent.IP, agent.Port)
+	req, _ := http.NewRequest("POST", url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", agent.AgentKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
-		s.failCommand(cmd.ID, "agent unreachable: "+err.Error())
+		s.deps.DB.UpdateCommand(cmd.ID, "failed", err.Error())
+		s.deps.Hub.Broadcast(EvCommandResult, map[string]any{
+			"id": cmd.ID, "status": "failed", "result": err.Error(),
+		})
 		return
 	}
 	defer resp.Body.Close()
 
-	resultBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	result, _ := io.ReadAll(resp.Body)
 	status := "done"
 	if resp.StatusCode >= 400 {
 		status = "failed"
 	}
-
-	_ = s.deps.DB.UpdateCommandResult(cmd.ID, status, string(resultBytes))
+	s.deps.DB.UpdateCommand(cmd.ID, status, string(result))
 	s.deps.Hub.Broadcast(EvCommandResult, map[string]any{
-		"id":       cmd.ID,
-		"agent_id": cmd.AgentID,
-		"command":  cmd.Command,
-		"status":   status,
-		"result":   string(resultBytes),
-	})
-	slog.Info("command delivered", "id", cmd.ID, "agent", cmd.AgentID, "status", status)
-}
-
-func (s *Server) failCommand(id, reason string) {
-	_ = s.deps.DB.UpdateCommandResult(id, "failed", reason)
-	s.deps.Hub.Broadcast(EvCommandResult, map[string]any{
-		"id": id, "status": "failed", "result": reason,
+		"id": cmd.ID, "status": status, "result": string(result),
 	})
 }
 
-func (s *Server) handleCommandGet(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listCommands(w http.ResponseWriter, r *http.Request) {
+	agentID := r.URL.Query().Get("agent_id")
+	limit := intParam(r, "limit", 50)
+	cmds, err := s.deps.DB.ListCommands(agentID, limit)
+	if err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	if cmds == nil {
+		cmds = []db.Command{}
+	}
+	jsonOK(w, cmds)
+}
+
+func (s *Server) getCommand(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	cmd, ok := s.deps.DB.GetCommand(id)
-	if !ok {
-		jsonError(w, "command not found", http.StatusNotFound)
+	cmd, err := s.deps.DB.GetCommand(id)
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
 		return
 	}
 	jsonOK(w, cmd)
 }
 
-func (s *Server) handleCommandsList(w http.ResponseWriter, r *http.Request) {
-	agentID := r.URL.Query().Get("agent_id")
-	limitStr := r.URL.Query().Get("limit")
-	limit := 50
-	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 200 {
-		limit = n
-	}
-	cmds, err := s.deps.DB.ListCommands(agentID, limit)
-	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+// ── Alerts ─────────────────────────────────────────────────────────────────
+
+func (s *Server) createAlert(w http.ResponseWriter, r *http.Request) {
+	var a db.Alert
+	if err := decode(r, &a); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	jsonOK(w, cmds)
-}
-
-// ─── Alerts ────────────────────────────────────────────────────────────────
-
-func (s *Server) handleAlertCreate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		AgentID string `json:"agent_id"`
-		Level   string `json:"level"`
-		Source  string `json:"source"`
-		Message string `json:"message"`
-		Details string `json:"details"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.Message == "" {
+	if a.Message == "" {
 		jsonError(w, "message is required", http.StatusBadRequest)
 		return
 	}
-	if req.Level == "" {
-		req.Level = "info"
-	}
-	if req.Source == "" {
-		req.Source = "agent"
-	}
-
-	alert := db.Alert{
-		AgentID: req.AgentID,
-		Level:   req.Level,
-		Source:  req.Source,
-		Message: req.Message,
-		Details: req.Details,
-		Status:  "open",
-	}
-	id, err := s.deps.DB.InsertAlert(alert)
+	id, err := s.deps.DB.CreateAlert(a)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	alert.ID = id
-
-	slog.Warn("alert received", "level", req.Level, "agent", req.AgentID, "msg", req.Message)
-	s.deps.Hub.Broadcast(EvAlert, alert)
-	jsonOK(w, map[string]any{"id": id, "status": "open"})
+	a.ID = id
+	a.TS = time.Now().UTC()
+	s.deps.Hub.Broadcast(EvAlert, a)
+	jsonOK(w, map[string]any{"id": id})
 }
 
-func (s *Server) handleAlertsList(w http.ResponseWriter, r *http.Request) {
+func (s *Server) listAlerts(w http.ResponseWriter, r *http.Request) {
 	level := r.URL.Query().Get("level")
-	limitStr := r.URL.Query().Get("limit")
-	limit := 100
-	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 500 {
-		limit = n
-	}
-	alerts, err := s.deps.DB.ListAlerts(limit, level)
+	limit := intParam(r, "limit", 100)
+	alerts, err := s.deps.DB.ListAlerts(level, limit)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
+	}
+	if alerts == nil {
+		alerts = []db.Alert{}
 	}
 	jsonOK(w, alerts)
 }
 
-func (s *Server) handleAlertAck(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+func (s *Server) updateAlert(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		jsonError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	var req struct{ Status string `json:"status"` }
-	if !decodeJSON(w, r, &req) {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	if req.Status == "" {
-		req.Status = "ack"
-	}
-	if err := s.deps.DB.AckAlert(id, req.Status); err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+	if err := s.deps.DB.UpdateAlertStatus(id, req.Status); err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
 	jsonOK(w, map[string]string{"status": req.Status})
 }
 
-// ─── Tickets ───────────────────────────────────────────────────────────────
+// ── Tickets ────────────────────────────────────────────────────────────────
 
-func (s *Server) handleTicketsCreate(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		PCName    string `json:"pc_name"`
-		Username  string `json:"username"`
-		Message   string `json:"message"`
-		Category  string `json:"category"`
-		Priority  string `json:"priority"`
-		AgentID   string `json:"agent_id"`
-		Telemetry string `json:"telemetry"`
-	}
-	if !decodeJSON(w, r, &req) {
+func (s *Server) createTicket(w http.ResponseWriter, r *http.Request) {
+	var t db.Ticket
+	if err := decode(r, &t); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	if req.Message == "" {
+	if t.Message == "" {
 		jsonError(w, "message is required", http.StatusBadRequest)
 		return
 	}
-	if req.Category == "" {
-		req.Category = "general"
-	}
-	if req.Priority == "" {
-		req.Priority = "normal"
-	}
 
-	t := db.Ticket{
-		PCName:    req.PCName,
-		Username:  req.Username,
-		Message:   req.Message,
-		Category:  req.Category,
-		Priority:  req.Priority,
-		AgentID:   req.AgentID,
-		Telemetry: req.Telemetry,
-		Status:    "open",
-	}
-
-	// Aplicar reglas.
-	ctx := rules.Context{
-		"pc_name":  req.PCName,
-		"username": req.Username,
-		"message":  req.Message,
-		"category": req.Category,
-	}
-	if result, matched := s.deps.Rules.Evaluate(ctx); matched {
+	// Apply rules engine
+	result := s.deps.Rules.Evaluate(map[string]string{
+		"message":  t.Message,
+		"category": t.Category,
+		"priority": t.Priority,
+		"pc_name":  t.PCName,
+		"username": t.Username,
+	})
+	if result.Matched {
 		if result.Category != "" {
 			t.Category = result.Category
 		}
+		if result.Priority != "" {
+			t.Priority = result.Priority
+		}
 	}
 
-	id, err := s.deps.DB.InsertTicket(t)
+	id, err := s.deps.DB.CreateTicket(t)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-
-	slog.Info("ticket created", "id", id, "pc", req.PCName, "category", t.Category)
 	t.ID = id
+	t.CreatedAt = time.Now().UTC()
+	t.UpdatedAt = t.CreatedAt
+
+	// Add auto-response from rules if available
+	if result.Response != "" {
+		s.deps.DB.AddMessage(db.TicketMessage{
+			TicketID: id,
+			Author:   "Sistema",
+			Content:  result.Response,
+		})
+	}
+
 	s.deps.Hub.Broadcast(EvTicketUpdate, t)
-	jsonOK(w, map[string]any{"id": id, "status": "open", "category": t.Category})
+	slog.Info("ticket created", "id", id, "category", t.Category, "priority", t.Priority)
+	jsonOK(w, map[string]any{
+		"id":       id,
+		"category": t.Category,
+		"priority": t.Priority,
+		"response": result.Response,
+	})
 }
 
-func (s *Server) handleTicketsList(w http.ResponseWriter, r *http.Request) {
-	limitStr := r.URL.Query().Get("limit")
-	limit := 50
-	if n, err := strconv.Atoi(limitStr); err == nil && n > 0 && n <= 200 {
-		limit = n
-	}
-	tickets, err := s.deps.DB.ListTickets(limit)
+func (s *Server) listTickets(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	limit := intParam(r, "limit", 50)
+	tickets, err := s.deps.DB.ListTickets(status, limit)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
+	}
+	if tickets == nil {
+		tickets = []db.Ticket{}
 	}
 	jsonOK(w, tickets)
 }
 
-func (s *Server) handleTicketsGet(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+func (s *Server) getTicket(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		jsonError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	ticket, ok := s.deps.DB.GetTicket(id)
-	if !ok {
-		jsonError(w, "ticket not found", http.StatusNotFound)
+	ticket, err := s.deps.DB.GetTicket(id)
+	if err != nil {
+		jsonError(w, "not found", http.StatusNotFound)
 		return
 	}
-	messages, _ := s.deps.DB.ListTicketMessages(id)
+	messages, _ := s.deps.DB.GetMessages(id)
+	if messages == nil {
+		messages = []db.TicketMessage{}
+	}
 	jsonOK(w, map[string]any{"ticket": ticket, "messages": messages})
 }
 
-func (s *Server) handleTicketsPatch(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+func (s *Server) updateTicket(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		jsonError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	var req struct{ Status string `json:"status"` }
-	if !decodeJSON(w, r, &req) {
+	var req struct {
+		Status string `json:"status"`
+	}
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
-	validStatuses := map[string]bool{"open": true, "in_progress": true, "resolved": true, "closed": true}
-	if !validStatuses[req.Status] {
-		jsonError(w, "invalid status", http.StatusBadRequest)
+	if err := s.deps.DB.UpdateTicket(id, req.Status); err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	if err := s.deps.DB.UpdateTicketStatus(id, req.Status); err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.deps.Hub.Broadcast(EvTicketUpdate, map[string]any{"id": id, "status": req.Status})
+	ticket, _ := s.deps.DB.GetTicket(id)
+	s.deps.Hub.Broadcast(EvTicketUpdate, ticket)
 	jsonOK(w, map[string]string{"status": req.Status})
 }
 
-func (s *Server) handleTicketMessageCreate(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	ticketID, err := strconv.ParseInt(idStr, 10, 64)
+func (s *Server) addMessage(w http.ResponseWriter, r *http.Request) {
+	ticketID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		jsonError(w, "invalid id", http.StatusBadRequest)
 		return
@@ -622,58 +609,54 @@ func (s *Server) handleTicketMessageCreate(w http.ResponseWriter, r *http.Reques
 		Author  string `json:"author"`
 		Content string `json:"content"`
 	}
-	if !decodeJSON(w, r, &req) {
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
 	if req.Content == "" {
 		jsonError(w, "content is required", http.StatusBadRequest)
 		return
 	}
-	if req.Author == "" {
-		req.Author = "system"
-	}
-	msgID, err := s.deps.DB.InsertTicketMessage(db.TicketMessage{
+	msg := db.TicketMessage{
 		TicketID: ticketID,
 		Author:   req.Author,
 		Content:  req.Content,
-	})
+	}
+	id, err := s.deps.DB.AddMessage(msg)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	s.deps.Hub.Broadcast(EvTicketUpdate, map[string]any{
-		"ticket_id": ticketID,
-		"message":   map[string]any{"id": msgID, "author": req.Author, "content": req.Content},
-	})
-	jsonOK(w, map[string]any{"id": msgID})
+	jsonOK(w, map[string]any{"id": id})
 }
 
-func (s *Server) handleTicketMessagesList(w http.ResponseWriter, r *http.Request) {
-	idStr := r.PathValue("id")
-	ticketID, err := strconv.ParseInt(idStr, 10, 64)
+func (s *Server) getMessages(w http.ResponseWriter, r *http.Request) {
+	ticketID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		jsonError(w, "invalid id", http.StatusBadRequest)
 		return
 	}
-	messages, err := s.deps.DB.ListTicketMessages(ticketID)
+	messages, err := s.deps.DB.GetMessages(ticketID)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
+	}
+	if messages == nil {
+		messages = []db.TicketMessage{}
 	}
 	jsonOK(w, messages)
 }
 
-// ─── AI Query ─────────────────────────────────────────────────────────────
+// ── AI ─────────────────────────────────────────────────────────────────────
 
-func (s *Server) handleAIQuery(w http.ResponseWriter, r *http.Request) {
+func (s *Server) aiQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Prompt    string `json:"prompt"`
-		AgentID   string `json:"agent_id"`
-		Requester string `json:"requester"`
-		Context   string `json:"context"`  // contexto adicional (logs, estado de agentes, etc.)
-		Format    string `json:"format"`
+		Prompt  string `json:"prompt"`
+		Context string `json:"context"`
+		Format  string `json:"format"`
 	}
-	if !decodeJSON(w, r, &req) {
+	if err := decode(r, &req); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
 		return
 	}
 	if req.Prompt == "" {
@@ -681,140 +664,127 @@ func (s *Server) handleAIQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enriquecer prompt con contexto de agentes si se solicita análisis de red.
-	fullPrompt := req.Prompt
+	system := "Eres un asistente de soporte IT para una empresa. Responde en español de forma clara y concisa. " +
+		"Si no estás seguro, dilo claramente. Máximo 3 párrafos."
 	if req.Context != "" {
-		fullPrompt = fmt.Sprintf("Contexto del sistema:\n%s\n\nConsulta: %s", req.Context, req.Prompt)
+		system += "\n\nContexto adicional:\n" + req.Context
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
-	defer cancel()
-
-	var (
-		resp string
-		err  error
-	)
-	if req.Format == "json" {
-		resp, err = s.deps.Ollama.GenerateJSON(ctx, fullPrompt)
-	} else {
-		resp, err = s.deps.Ollama.Generate(ctx, fullPrompt)
-	}
-
+	response, err := s.deps.AI.Query(req.Prompt, system)
 	if err != nil {
 		slog.Warn("ollama error", "error", err)
-		rCtx := rules.Context{"message": req.Prompt, "requester": req.Requester}
-		if result, matched := s.deps.Rules.Evaluate(rCtx); matched && result.Response != "" {
-			jsonOK(w, map[string]string{"response": result.Response, "source": "rules"})
-			return
-		}
-		jsonError(w, "AI unavailable: "+err.Error(), http.StatusServiceUnavailable)
+		jsonOK(w, map[string]any{
+			"response": "El servicio de IA no está disponible en este momento.",
+			"source":   "fallback",
+		})
 		return
 	}
-
-	jsonOK(w, map[string]string{
-		"response": resp,
-		"source":   "ollama",
-		"model":    s.deps.Ollama.Model(),
-	})
+	jsonOK(w, map[string]any{"response": response, "source": "ollama"})
 }
 
-// ─── Updates / Knowledge / Plugins / Queue (legacy) ───────────────────────
+// ── Dashboard ──────────────────────────────────────────────────────────────
 
-func (s *Server) handleUpdatesManifest(w http.ResponseWriter, _ *http.Request) {
-	jsonOK(w, s.deps.Updates.CurrentManifest())
+func (s *Server) dashboardStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := s.deps.DB.GetStats()
+	if err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, stats)
 }
 
-func (s *Server) handleKnowledgeSync(w http.ResponseWriter, r *http.Request) {
+// ── Network ────────────────────────────────────────────────────────────────
+
+func (s *Server) networkLocations(w http.ResponseWriter, r *http.Request) {
+	jsonOK(w, network.All())
+}
+
+// ── Settings ───────────────────────────────────────────────────────────────
+
+func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.deps.DB.GetSettings()
+	if err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, settings)
+}
+
+func (s *Server) saveSettings(w http.ResponseWriter, r *http.Request) {
+	var settings db.GatewaySettings
+	if err := decode(r, &settings); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if err := s.deps.DB.SaveSettings(settings); err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]string{"status": "saved"})
+}
+
+// ── Rules ──────────────────────────────────────────────────────────────────
+
+func (s *Server) listRules(w http.ResponseWriter, r *http.Request) {
+	jsonOK(w, s.deps.Rules.Rules())
+}
+
+// ── Knowledge ──────────────────────────────────────────────────────────────
+
+func (s *Server) upsertKnowledge(w http.ResponseWriter, r *http.Request) {
+	var k db.Knowledge
+	if err := decode(r, &k); err != nil {
+		jsonError(w, "invalid body", http.StatusBadRequest)
+		return
+	}
+	if k.ID == "" {
+		k.ID = uuid.New().String()
+	}
+	if err := s.deps.DB.UpsertKnowledge(k); err != nil {
+		jsonError(w, "db error", http.StatusInternalServerError)
+		return
+	}
+	jsonOK(w, map[string]string{"id": k.ID})
+}
+
+func (s *Server) listKnowledge(w http.ResponseWriter, r *http.Request) {
 	category := r.URL.Query().Get("category")
-	entries, err := s.deps.DB.ListKnowledge(category)
+	items, err := s.deps.DB.ListKnowledge(category)
 	if err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
+		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
-	jsonOK(w, map[string]any{
-		"entries":   entries,
-		"count":     len(entries),
-		"synced_at": time.Now().UTC().Format(time.RFC3339),
-	})
+	if items == nil {
+		items = []db.Knowledge{}
+	}
+	jsonOK(w, items)
 }
 
-func (s *Server) handleKnowledgeUpsert(w http.ResponseWriter, r *http.Request) {
-	var entry db.KnowledgeEntry
-	if !decodeJSON(w, r, &entry) {
-		return
-	}
-	if entry.ID == "" || entry.Content == "" {
-		jsonError(w, "id and content are required", http.StatusBadRequest)
-		return
-	}
-	if err := s.deps.DB.UpsertKnowledge(entry); err != nil {
-		jsonError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	jsonOK(w, map[string]string{"status": "ok"})
-}
+// ── Queue ──────────────────────────────────────────────────────────────────
 
-func (s *Server) handlePluginRun(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Plugin  string         `json:"plugin"`
-		Payload map[string]any `json:"payload"`
-	}
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	if req.Plugin == "" {
-		jsonError(w, "plugin name required", http.StatusBadRequest)
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	result, err := s.deps.Plugins.Run(ctx, req.Plugin, req.Payload)
-	if err != nil {
-		jsonError(w, "plugin error: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	jsonOK(w, result)
-}
-
-func (s *Server) handleQueueStats(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) queueStats(w http.ResponseWriter, r *http.Request) {
 	jsonOK(w, s.deps.Queue.Stats())
 }
 
-// ─── helpers ──────────────────────────────────────────────────────────────
+// ── Legacy compat ──────────────────────────────────────────────────────────
 
-func jsonOK(w http.ResponseWriter, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(v)
+func (s *Server) manifest(w http.ResponseWriter, r *http.Request) {
+	jsonOK(w, map[string]any{
+		"version":    "2.0.0",
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+		"files":      []any{},
+	})
 }
 
-func jsonError(w http.ResponseWriter, msg string, code int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}
-
-func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 2<<20))
+func (s *Server) knowledgeSync(w http.ResponseWriter, r *http.Request) {
+	category := r.URL.Query().Get("category")
+	items, err := s.deps.DB.ListKnowledge(category)
 	if err != nil {
-		jsonError(w, "read body: "+err.Error(), http.StatusBadRequest)
-		return false
+		jsonError(w, "db error", http.StatusInternalServerError)
+		return
 	}
-	if err := json.NewDecoder(bytes.NewReader(body)).Decode(dst); err != nil {
-		jsonError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return false
+	if items == nil {
+		items = []db.Knowledge{}
 	}
-	return true
-}
-
-func buildAgentURL(agent db.Agent, path string) string {
-	return fmt.Sprintf("http://%s:%d%s", agent.IP, agent.Port, path)
-}
-
-// pathID extrae y parsea un segmento numérico del path (compatibilidad con Go 1.21).
-func pathID(r *http.Request, name string) (int64, bool) {
-	s := strings.TrimPrefix(r.URL.Path, "/")
-	_ = s // placeholder — en Go 1.22 se usa r.PathValue(name)
-	v := r.PathValue(name)
-	id, err := strconv.ParseInt(v, 10, 64)
-	return id, err == nil
+	jsonOK(w, items)
 }

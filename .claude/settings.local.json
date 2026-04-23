@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go build *)",
+      "Bash(set GOARCH=386)",
+      "Bash(set CGO_ENABLED=1)",
+      "Bash(GOARCH=386 CGO_ENABLED=1 CC=\"C:/msys64/mingw32/bin/gcc.exe\" go build -tags softwarerender -ldflags=\"-H=windowsgui -s -w\" -o Frank32.exe .)",
+      "Bash(GOARCH=386 CGO_ENABLED=1 CC=\"C:/msys64/mingw32/bin/gcc.exe\" go build -v -tags softwarerender -ldflags=\"-H=windowsgui -s -w\" -o Frank32.exe .)"
+    ]
+  }
+}

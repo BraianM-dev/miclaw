@@ -1,136 +1,109 @@
-{
-  "version": "1.0.0",
-  "rules": [
-    {
-      "id": "slow-pc",
-      "priority": 100,
-      "conditions": [
-        {
-          "field": "message",
-          "operator": "regex",
-          "value": "lento|tarda|cuelga|congelado|pesado|tranca"
-        }
-      ],
-      "action": {
-        "type": "categorize",
-        "category": "performance",
-        "response": "Detecté un problema de rendimiento. Analizando recursos del sistema y creando ticket de performance.",
-        "action": "run_diagnostics"
-      }
-    },
-    {
-      "id": "printer-issue",
-      "priority": 90,
-      "conditions": [
-        {
-          "field": "message",
-          "operator": "regex",
-          "value": "impresora|imprime|tinta|papel|atasco|spooler"
-        }
-      ],
-      "action": {
-        "type": "categorize",
-        "category": "peripherals",
-        "response": "Problema de impresora detectado. Ticket enviado a soporte con diagnóstico del spooler.",
-        "action": "check_printer"
-      }
-    },
-    {
-      "id": "network-issue",
-      "priority": 90,
-      "conditions": [
-        {
-          "field": "message",
-          "operator": "regex",
-          "value": "internet|wifi|red|conexion|ping|latencia|vpn"
-        }
-      ],
-      "action": {
-        "type": "categorize",
-        "category": "network",
-        "response": "Problema de conectividad detectado. Ejecutando diagnóstico de red.",
-        "action": "network_diag"
-      }
-    },
-    {
-      "id": "password-reset",
-      "priority": 85,
-      "conditions": [
-        {
-          "field": "message",
-          "operator": "regex",
-          "value": "contraseña|password|clave|bloquea|bloqueado|acceso"
-        }
-      ],
-      "action": {
-        "type": "categorize",
-        "category": "access",
-        "response": "Solicitud de acceso/contraseña recibida. Escalando a AD helpdesk.",
-        "action": "access_request"
-      }
-    },
-    {
-      "id": "software-install",
-      "priority": 80,
-      "conditions": [
-        {
-          "field": "message",
-          "operator": "regex",
-          "value": "instalar|instalacion|programa|software|aplicacion"
-        }
-      ],
-      "action": {
-        "type": "categorize",
-        "category": "software",
-        "response": "Solicitud de instalación registrada. Verificando licencias y permisos.",
-        "action": "software_request"
-      }
-    },
-    {
-      "id": "urgent-flag",
-      "priority": 110,
-      "conditions": [
-        {
-          "field": "message",
-          "operator": "regex",
-          "value": "urgente|critico|caido|no funciona nada|todo roto"
-        }
-      ],
-      "action": {
-        "type": "tag",
-        "tag": "urgent",
-        "category": "critical",
-        "response": "¡Incidente crítico detectado! Escalando con prioridad máxima.",
-        "action": "escalate"
-      }
-    },
-    {
-      "id": "disk-space",
-      "priority": 75,
-      "conditions": [
-        {
-          "field": "message",
-          "operator": "regex",
-          "value": "disco|espacio|lleno|storage|almacenamiento"
-        }
-      ],
-      "action": {
-        "type": "categorize",
-        "category": "storage",
-        "response": "Analizando espacio en disco. Generando reporte de uso.",
-        "action": "disk_analysis"
-      }
-    },
-    {
-      "id": "default-catch",
-      "priority": 0,
-      "conditions": [],
-      "action": {
-        "type": "categorize",
-        "category": "general",
-        "response": "",
-        "action": "default"
-      }
+[
+  {
+    "id": "urgent-flag",
+    "priority": 110,
+    "conditions": [
+      { "field": "message", "operator": "regex", "value": "urgen|critic|caido|no funciona nada|sin internet|sin sistema" }
+    ],
+    "action": {
+      "type": "categorize",
+      "category": "critical",
+      "priority": "critical",
+      "response": "Tu caso fue marcado como URGENTE y escalado al equipo de soporte. Te contactaremos a la brevedad."
     }
-  ]
-}
+  },
+  {
+    "id": "slow-pc",
+    "priority": 100,
+    "conditions": [
+      { "field": "message", "operator": "regex", "value": "lento|tarda|cuelga|congela|freezea|no responde" }
+    ],
+    "action": {
+      "type": "categorize",
+      "category": "performance",
+      "priority": "normal",
+      "response": "Detecté un posible problema de rendimiento. Iniciando diagnóstico automático en tu equipo.",
+      "action": "run_diagnostics"
+    }
+  },
+  {
+    "id": "printer-issue",
+    "priority": 90,
+    "conditions": [
+      { "field": "message", "operator": "regex", "value": "impresora|imprimir|printer|papel|toner|ink" }
+    ],
+    "action": {
+      "type": "categorize",
+      "category": "hardware",
+      "priority": "low",
+      "response": "Registré un problema con la impresora. Un técnico revisará el estado del dispositivo y la cola de impresión."
+    }
+  },
+  {
+    "id": "network-issue",
+    "priority": 90,
+    "conditions": [
+      { "field": "message", "operator": "regex", "value": "internet|red|wifi|conexion|conectar|vpn|timeout|sin acceso" }
+    ],
+    "action": {
+      "type": "categorize",
+      "category": "network",
+      "priority": "high",
+      "response": "Problema de red detectado. Verificando conectividad y rutas de red para tu equipo.",
+      "action": "check_network"
+    }
+  },
+  {
+    "id": "password-reset",
+    "priority": 85,
+    "conditions": [
+      { "field": "message", "operator": "regex", "value": "contrase|password|clave|acceso|login|bloqueado|usuario" }
+    ],
+    "action": {
+      "type": "categorize",
+      "category": "access",
+      "priority": "high",
+      "response": "Solicitud de acceso recibida. El área de seguridad procesará el restablecimiento a la brevedad."
+    }
+  },
+  {
+    "id": "software-install",
+    "priority": 80,
+    "conditions": [
+      { "field": "message", "operator": "regex", "value": "instalar|software|programa|aplicacion|licencia|actualizar" }
+    ],
+    "action": {
+      "type": "categorize",
+      "category": "software",
+      "priority": "normal",
+      "response": "Solicitud de software registrada. El equipo de IT evaluará los requerimientos y gestionará la instalación."
+    }
+  },
+  {
+    "id": "disk-space",
+    "priority": 75,
+    "conditions": [
+      { "field": "message", "operator": "regex", "value": "disco lleno|sin espacio|espacio|storage|almacenamiento" }
+    ],
+    "action": {
+      "type": "categorize",
+      "category": "storage",
+      "priority": "normal",
+      "response": "Detecté un posible problema de espacio en disco. Iniciando análisis de almacenamiento.",
+      "action": "check_disk"
+    }
+  },
+  {
+    "id": "default-catch",
+    "priority": 0,
+    "conditions": [
+      { "field": "message", "operator": "exists", "value": "" }
+    ],
+    "action": {
+      "type": "categorize",
+      "category": "general",
+      "priority": "normal",
+      "response": "Tu solicitud fue registrada y asignada al equipo de soporte. Te responderemos pronto."
+    }
+  }
+]
