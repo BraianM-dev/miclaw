@@ -1,4 +1,5 @@
 # Dependencies
+gateway/vendor/
 node_modules/
 frontend/node_modules/
 

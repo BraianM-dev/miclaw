@@ -1,21 +1,14 @@
 # ════════════════════════════════════════════════════════════════
 #  miclaw2 — stack completo v2
 #
-#  Las imágenes se construyen localmente desde los Dockerfiles.
-#  No requiere GitHub ni GHCR.
-#
-#  SETUP:
-#  1. Copiar o editar el archivo .env con tus valores
-#  2. En Portainer: Deploy stack → pegar este archivo
-#     (o desde CLI: docker compose up -d --build)
-#
-#  VARIABLES (.env):
-#    MICLAW_AGENT_KEY   — clave compartida agentes ↔ gateway (obligatoria)
-#    OLLAMA_MODEL       — modelo a usar (default: phi4-mini:3.8b)
-#    GATEWAY_PORT       — puerto externo del gateway (default: 3001)
-#    DASHBOARD_PORT     — puerto externo del frontend (default: 8080)
-#    WEBUI_PORT         — puerto externo de Open-WebUI (default: 3000)
-#    TZ                 — zona horaria (default: America/Argentina/Buenos_Aires)
+#  SETUP en Portainer:
+#  1. Stacks → Add stack → Repository
+#  2. Repository URL: https://github.com/BraianM-dev/miclaw
+#  3. Repository reference: refs/heads/main
+#  4. Compose path: docker-compose.yml
+#  5. Environment variables:
+#       MICLAW_AGENT_KEY = (tu clave secreta)
+#  6. Deploy
 # ════════════════════════════════════════════════════════════════
 
 services:
@@ -29,14 +22,6 @@ services:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
-    # GPU: descomentar si el host tiene GPU NVIDIA
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
     environment:
       - OLLAMA_KEEP_ALIVE=24h
       - OLLAMA_NUM_PARALLEL=2
@@ -49,7 +34,7 @@ services:
     networks:
       - miclaw-net
 
-  # ── Pull del modelo al iniciar (job único) ────────────────────
+  # ── Pull del modelo al iniciar ────────────────────────────────
   ollama-pull:
     image: ollama/ollama:latest
     container_name: ollama-pull
@@ -64,12 +49,11 @@ services:
     networks:
       - miclaw-net
 
-  # ── Gateway (construido localmente) ──────────────────────────
+  # ── Gateway ───────────────────────────────────────────────────
   miclaw-gateway:
     build:
       context: ./gateway
       dockerfile: Dockerfile
-    image: miclaw-gateway:local
     container_name: miclaw-gateway
     restart: unless-stopped
     depends_on:
@@ -93,16 +77,15 @@ services:
       interval: 20s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15s
     networks:
       - miclaw-net
 
-  # ── Dashboard Frontend (construido localmente) ────────────────
+  # ── Frontend ──────────────────────────────────────────────────
   miclaw-frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: miclaw-frontend:local
     container_name: miclaw-frontend
     restart: unless-stopped
     depends_on:
@@ -113,7 +96,7 @@ services:
     networks:
       - miclaw-net
 
-  # ── Open-WebUI (interfaz Ollama — opcional) ───────────────────
+  # ── Open-WebUI (opcional) ─────────────────────────────────────
   open-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: open-webui
@@ -131,9 +114,6 @@ services:
     networks:
       - miclaw-net
 
-# ════════════════════════════════════════════════════════════════
-#  Volumes
-# ════════════════════════════════════════════════════════════════
 volumes:
   ollama_data:
     name: miclaw_ollama_data
@@ -144,9 +124,6 @@ volumes:
   openwebui_data:
     name: miclaw_openwebui_data
 
-# ════════════════════════════════════════════════════════════════
-#  Red interna
-# ════════════════════════════════════════════════════════════════
 networks:
   miclaw-net:
     name: miclaw-net

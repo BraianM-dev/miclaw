@@ -1,17 +1,17 @@
 # ─── Stage 1: build ───────────────────────────────────────────────────────
-# Usa el directorio vendor/ incluido en el repo.
-# No requiere acceso a internet durante el build.
 FROM golang:1.24-alpine AS builder
 
 WORKDIR /src
 
+# Descargar dependencias en capa separada para cache de Docker
 COPY go.mod go.sum ./
-COPY vendor/ vendor/
+RUN go mod download
+
 COPY . .
 
 RUN mkdir -p /out && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-    go build -mod=vendor -ldflags="-s -w" \
+    go build -ldflags="-s -w" \
     -o /out/gateway .
 
 # ─── Stage 2: runtime mínimo ──────────────────────────────────────────────
