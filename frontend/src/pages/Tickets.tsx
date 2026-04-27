@@ -98,7 +98,7 @@ export function Tickets() {
   const [newPc, setNewPc]       = useState('')
 
   const load = useCallback(async () => {
-    try { setTickets(await api.tickets(100)) } finally { setLoading(false) }
+    try { setTickets(await api.tickets(undefined, 100)) } finally { setLoading(false) }
   }, [])
 
   useEffect(() => { load() }, [load])
