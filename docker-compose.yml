@@ -1,27 +1,21 @@
 # ════════════════════════════════════════════════════════════════
 #  miclaw2 — stack completo v2
 #
-#  Las imágenes gateway y frontend se construyen automáticamente
-#  en GitHub Actions y se publican en GHCR.
+#  Las imágenes se construyen localmente desde los Dockerfiles.
+#  No requiere GitHub ni GHCR.
 #
-#  SETUP INICIAL:
-#  1. Hacer push a GitHub → Actions construye y publica las imágenes
-#  2. En Portainer → Environments → Variables (o .env en el servidor):
-#       GHCR_USER=tu-usuario-github
-#       MICLAW_AGENT_KEY=una-clave-segura
-#  3. Deploy del stack → Portainer descarga las imágenes de GHCR
+#  SETUP:
+#  1. Copiar o editar el archivo .env con tus valores
+#  2. En Portainer: Deploy stack → pegar este archivo
+#     (o desde CLI: docker compose up -d --build)
 #
-#  VARIABLES REQUERIDAS:
-#    GHCR_USER          — usuario de GitHub (dueño del repo)
-#    MICLAW_AGENT_KEY   — clave compartida entre agentes y gateway
-#
-#  VARIABLES OPCIONALES:
-#    GATEWAY_PORT    (default: 3001)
-#    DASHBOARD_PORT  (default: 8080)
-#    WEBUI_PORT      (default: 3000)
-#    OLLAMA_MODEL    (default: phi4-mini:3.8b)
-#    TAG             (default: latest)
-#    TZ              (default: America/Argentina/Buenos_Aires)
+#  VARIABLES (.env):
+#    MICLAW_AGENT_KEY   — clave compartida agentes ↔ gateway (obligatoria)
+#    OLLAMA_MODEL       — modelo a usar (default: phi4-mini:3.8b)
+#    GATEWAY_PORT       — puerto externo del gateway (default: 3001)
+#    DASHBOARD_PORT     — puerto externo del frontend (default: 8080)
+#    WEBUI_PORT         — puerto externo de Open-WebUI (default: 3000)
+#    TZ                 — zona horaria (default: America/Argentina/Buenos_Aires)
 # ════════════════════════════════════════════════════════════════
 
 services:
@@ -70,9 +64,12 @@ services:
     networks:
       - miclaw-net
 
-  # ── Gateway (imagen pre-construida en GHCR) ───────────────────
+  # ── Gateway (construido localmente) ──────────────────────────
   miclaw-gateway:
-    image: ghcr.io/${GHCR_USER}/miclaw-gateway:${TAG:-latest}
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    image: miclaw-gateway:local
     container_name: miclaw-gateway
     restart: unless-stopped
     depends_on:
@@ -100,9 +97,12 @@ services:
     networks:
       - miclaw-net
 
-  # ── Dashboard Frontend (imagen pre-construida en GHCR) ────────
+  # ── Dashboard Frontend (construido localmente) ────────────────
   miclaw-frontend:
-    image: ghcr.io/${GHCR_USER}/miclaw-frontend:${TAG:-latest}
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: miclaw-frontend:local
     container_name: miclaw-frontend
     restart: unless-stopped
     depends_on:
