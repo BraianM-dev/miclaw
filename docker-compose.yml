@@ -72,6 +72,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      args:
+        - VITE_API_KEY=${MICLAW_AGENT_KEY:-changeme}
     container_name: miclaw-frontend
     restart: unless-stopped
     depends_on:

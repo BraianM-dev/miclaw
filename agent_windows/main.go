@@ -930,7 +930,7 @@ func retryPendingEvents(ctx context.Context) {
 }
 
 func trySendEvent(ev PendingEvent) bool {
-	if gatewayURL == "" || gatewayURL == "http://192.168.1.246:3001" {
+	if gatewayURL == "" {
 		return false
 	}
 	payload, _ := json.Marshal(ev)
@@ -6007,7 +6007,116 @@ func startCommandListener() {
 	}()
 }
 
-func registerWithGateway() {}
+// ── Gateway sync ──────────────────────────────────────────────────────────────
+
+// registerWithGateway registra este agente en el gateway central.
+func registerWithGateway() {
+	if gatewayURL == "" {
+		return
+	}
+	ip := getOutboundIP()
+	hostname, _ := os.Hostname()
+
+	body, _ := json.Marshal(map[string]any{
+		"name":      hostname,
+		"ip":        ip,
+		"port":      8081,
+		"hostname":  hostname,
+		"version":   AgentVersion,
+		"agent_key": agentAPIKey,
+		"type":      "frank",
+	})
+
+	req, err := http.NewRequest("POST", gatewayURL+"/agents/register", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", agentAPIKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Printf("[WARN] Gateway register failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+	logger.Printf("[INFO] Registered with gateway %s (status %d)", gatewayURL, resp.StatusCode)
+}
+
+// sendHeartbeat envía métricas al gateway cada 60 segundos.
+func sendHeartbeat() {
+	if gatewayURL == "" {
+		return
+	}
+	ip := getOutboundIP()
+	hostname, _ := os.Hostname()
+	agentID := "frank-" + ip
+
+	// CPU %
+	cpuStr := psRun(`(Get-WmiObject Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average`)
+	cpu, _ := strconv.ParseFloat(strings.TrimSpace(cpuStr), 64)
+
+	// RAM %
+	memStr := psRun(`$os=(Get-WmiObject Win32_OperatingSystem); [math]::Round(($os.TotalVisibleMemorySize-$os.FreePhysicalMemory)/$os.TotalVisibleMemorySize*100,1)`)
+	mem, _ := strconv.ParseFloat(strings.TrimSpace(memStr), 64)
+
+	// Disco C: %
+	diskStr := psRun(`$d=Get-WmiObject Win32_LogicalDisk -Filter "DriveType=3 AND DeviceID='C:'"; if($d.Size -gt 0){[math]::Round(($d.Size-$d.FreeSpace)/$d.Size*100,1)}else{0}`)
+	disk, _ := strconv.ParseFloat(strings.TrimSpace(diskStr), 64)
+
+	body, _ := json.Marshal(map[string]any{
+		"agent_id": agentID,
+		"name":     hostname,
+		"ip":       ip,
+		"cpu_pct":  cpu,
+		"mem_pct":  mem,
+		"disk_pct": disk,
+		"status":   "ok",
+		"version":  AgentVersion,
+	})
+
+	req, err := http.NewRequest("POST", gatewayURL+"/agents/heartbeat", bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", agentAPIKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		logger.Printf("[WARN] Heartbeat failed: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+}
+
+// startGatewaySync registra el agente y luego envía heartbeats periódicos.
+func startGatewaySync(ctx context.Context) {
+	if gatewayURL == "" {
+		return
+	}
+	// Esperar un poco para que el resto del sistema esté listo
+	select {
+	case <-time.After(5 * time.Second):
+	case <-ctx.Done():
+		return
+	}
+
+	registerWithGateway()
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			sendHeartbeat()
+		case <-ctx.Done():
+			return
+		}
+	}
+}
 
 func getOutboundIP() string {
 	conn, err := net.Dial("udp", "8.8.8.8:80")
@@ -6153,6 +6262,9 @@ func main() {
 	startCommandListener()
 	go retryPendingEvents(serverCtx)
 	go proactiveMonitoring(serverCtx)
+
+	// Gateway sync (registro + heartbeat)
+	go startGatewaySync(serverCtx)
 
 	// Sistema distribuido (P2P + KB maintenance)
 	startP2P(serverCtx)

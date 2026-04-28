@@ -1,5 +1,12 @@
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink } from 'react-router-dom'
 import type { ReactNode } from 'react'
+import { useState, useEffect } from 'react'
+import {
+  LayoutDashboard, Monitor, Ticket, Bell, Terminal,
+  Bot, Settings, Wifi, WifiOff, ShieldCheck,
+} from 'lucide-react'
+import { connectEvents } from '../api/client'
+import type { SSEEvent } from '../types'
 
 interface LayoutProps {
   children: ReactNode
@@ -7,23 +14,44 @@ interface LayoutProps {
 }
 
 const NAV = [
-  { to: '/',         icon: '📊', label: 'Dashboard' },
-  { to: '/agents',   icon: '🖥️', label: 'Agentes' },
-  { to: '/tickets',  icon: '🎫', label: 'Tickets' },
-  { to: '/alerts',   icon: '🔔', label: 'Alertas' },
-  { to: '/console',  icon: '⌨️', label: 'Consola' },
-  { to: '/ai',       icon: '🤖', label: 'IA Asistente' },
+  { to: '/',        Icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/agents',  Icon: Monitor,         label: 'Agentes' },
+  { to: '/tickets', Icon: Ticket,          label: 'Tickets' },
+  { to: '/alerts',  Icon: Bell,            label: 'Alertas' },
+  { to: '/console', Icon: Terminal,        label: 'Consola' },
+  { to: '/ai',      Icon: Bot,             label: 'IA Asistente' },
+  { to: '/settings',Icon: Settings,        label: 'Configuración' },
 ]
 
 export function Layout({ children, title }: LayoutProps) {
-  const location = useLocation()
+  const [connected, setConnected] = useState(false)
+
+  useEffect(() => {
+    const unsub = connectEvents((ev: SSEEvent) => {
+      if (ev.type === 'connected') setConnected(true)
+    })
+    // Si recibimos cualquier evento, estamos conectados
+    const origUnsub = connectEvents(() => setConnected(true))
+    setConnected(false)
+    const timer = setTimeout(() => {}, 2000)
+    return () => { unsub(); origUnsub(); clearTimeout(timer) }
+  }, [])
+
+  // Simpler connection check: just try to connect and mark connected
+  useEffect(() => {
+    let alive = true
+    const unsub = connectEvents(() => { if (alive) setConnected(true) })
+    return () => { alive = false; unsub(); setConnected(false) }
+  }, [])
 
   return (
-    <div className="app-shell">
+    <div className="layout">
       {/* ── Sidebar ── */}
       <aside className="sidebar">
         <div className="sidebar-logo">
-          <span style={{ fontSize: 24 }}>🛡️</span>
+          <div className="sidebar-logo-icon">
+            <ShieldCheck size={16} color="#58a6ff" />
+          </div>
           <div>
             <div className="sidebar-logo-text">MicLaw</div>
             <div className="sidebar-logo-sub">IT Operations</div>
@@ -32,35 +60,56 @@ export function Layout({ children, title }: LayoutProps) {
 
         <nav className="sidebar-nav">
           <div className="nav-section">Operaciones</div>
-          {NAV.map(({ to, icon, label }) => (
+          {NAV.slice(0, 6).map(({ to, Icon, label }) => (
             <NavLink
               key={to}
               to={to}
               end={to === '/'}
               className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
             >
-              <span className="icon">{icon}</span>
-              <span>{label}</span>
+              <span className="nav-item-icon"><Icon size={16} /></span>
+              <span className="nav-item-label">{label}</span>
+            </NavLink>
+          ))}
+          <div className="nav-section" style={{ marginTop: 8 }}>Sistema</div>
+          {NAV.slice(6).map(({ to, Icon, label }) => (
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+            >
+              <span className="nav-item-icon"><Icon size={16} /></span>
+              <span className="nav-item-label">{label}</span>
             </NavLink>
           ))}
         </nav>
 
-        <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border)' }}>
-          <div className="text-small text-muted">v1.0.0 — AFE</div>
+        <div className="sidebar-footer">
+          <div className="flex items-center gap-6">
+            <span className={`dot dot-${connected ? 'connected' : 'disconnected'}`} />
+            <span className="text-xs text-muted">{connected ? 'Conectado' : 'Sin conexión'}</span>
+          </div>
+          <div className="text-xs text-muted mt-4">v2.0 — AFE</div>
         </div>
       </aside>
 
       {/* ── Main ── */}
-      <div className="main-area">
+      <div className="main-content">
         <header className="topbar">
           <span className="topbar-title">{title}</span>
-          <div className="topbar-actions">
+          <div className="topbar-right">
+            <div className="connection-status">
+              {connected
+                ? <><Wifi size={13} color="var(--success)" /> <span style={{ color: 'var(--success)' }}>En línea</span></>
+                : <><WifiOff size={13} color="var(--danger)" /> <span style={{ color: 'var(--danger)' }}>Desconectado</span></>
+              }
+            </div>
             <span className="text-small text-muted">
-              {new Date().toLocaleDateString('es-UY', { weekday: 'long', day: 'numeric', month: 'long' })}
+              {new Date().toLocaleDateString('es-AR', { weekday: 'short', day: 'numeric', month: 'short' })}
             </span>
           </div>
         </header>
-        <main className="page-content">
+        <main className="page">
           {children}
         </main>
       </div>
