@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -649,6 +650,62 @@ func (s *Server) getMessages(w http.ResponseWriter, r *http.Request) {
 
 // ── AI ─────────────────────────────────────────────────────────────────────
 
+// itDomainKeywords are terms that clearly indicate an IT-related query.
+var itDomainKeywords = []string{
+	"agente", "alert", "ticket", "error", "windows", "red ", " red", "redes", "ip ", " ip",
+	"dns", "cpu", "ram", "disco", "impresora", "wifi", "wi-fi", "vpn", "antivirus", "usuario",
+	"contraseña", "office", "outlook", "teams", "servidor", "laptop", "monitor", "hardware",
+	"software", "instalar", "configura", "actualiz", "wazuh", "frank", "sistema", "proceso",
+	"memoria", "internet", "conexion", "conexión", "ping", "firewall", "backup", "servicio",
+	"reinici", "diagnos", "inventario", "soporte", "helpdesk", "analiz", "estado", "online",
+	"offline", "heartbeat", "puerto", "switch", "router", "cable", "parche", "driver",
+	"pantalla", "teclado", "mouse", "ratón", "usb", "bluetooth", "imprim", "escanear",
+	"correo", "mail", "carpeta", "archivo", "permi", "dominio", "active directory", "ad ",
+	"virus", "malware", "ransom", "phishing", "spam", "certific", "ssl", "https", "proxy",
+	"velocidad", "banda ancha", "latencia", "pérdida", "paquete", "vlan", "dhcp", "gateway",
+	// greetings and meta-queries that are always OK
+	"hola", "gracias", "buenas", "ayuda", "qué puedes", "que puedes", "cómo funciona",
+	"como funciona", "capacidades", "funciones", "comandos",
+}
+
+// isITRelated returns true when the prompt is plausibly IT-related.
+// Short prompts (<= 6 words) are allowed through to avoid over-blocking.
+func isITRelated(prompt string) bool {
+	lower := strings.ToLower(prompt)
+	words := strings.Fields(lower)
+	if len(words) <= 6 {
+		return true // let the LLM judge short/ambiguous queries
+	}
+	for _, kw := range itDomainKeywords {
+		if strings.Contains(lower, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+const aiSystemPrompt = `Eres un asistente de soporte IT EXCLUSIVAMENTE para MicLaw / AFE (Administración de Ferrocarriles del Estado - Uruguay).
+
+DOMINIOS PERMITIDOS — solo respondés sobre:
+• Soporte técnico Windows: errores, BSOD, actualizaciones, activación
+• Redes: conectividad, DNS, DHCP, VPN, Wi-Fi, switches, routers, VLAN
+• Impresoras, escáneres y periféricos de oficina
+• Microsoft Office, Outlook, Teams, OneDrive y apps empresariales
+• Active Directory: usuarios, contraseñas, permisos, GPO
+• Antivirus, seguridad, malware, ransomware, phishing
+• Monitoreo Wazuh, agentes Frank, alertas y eventos del sistema
+• Hardware: PC, laptops, servidores, monitores, UPS
+• Tickets de soporte: creación, seguimiento, resolución
+• Inventario y activos IT de la organización
+
+REGLAS ESTRICTAS:
+1. Si la consulta NO trata sobre IT empresarial → respondé ÚNICAMENTE: "Solo puedo ayudarte con temas de soporte IT empresarial. ¿Tenés algún problema técnico?"
+2. Nunca respondas sobre recetas, cocina, geografía, historia, programación personal ni ningún otro tema fuera del soporte IT.
+3. Responde SIEMPRE en español rioplatense, conciso y técnico.
+4. Máximo 3 párrafos. Sin markdown complejo, sin listas largas.
+5. Si no sabés la respuesta, decilo claramente sin inventar información.
+6. No menciones que eres un modelo de lenguaje ni des información sobre tu entrenamiento.`
+
 func (s *Server) aiQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Prompt  string `json:"prompt"`
@@ -664,17 +721,26 @@ func (s *Server) aiQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	system := "Eres un asistente de soporte IT para una empresa. Responde en español de forma clara y concisa. " +
-		"Si no estás seguro, dilo claramente. Máximo 3 párrafos."
+	// Pre-filter: reject clearly off-domain queries before hitting the LLM
+	if !isITRelated(req.Prompt) {
+		slog.Info("ai query rejected (off-domain)", "prompt_len", len(req.Prompt))
+		jsonOK(w, map[string]any{
+			"response": "Solo puedo ayudarte con temas de soporte IT empresarial. ¿Tenés algún problema técnico con algún equipo o sistema?",
+			"source":   "filter",
+		})
+		return
+	}
+
+	system := aiSystemPrompt
 	if req.Context != "" {
-		system += "\n\nContexto adicional:\n" + req.Context
+		system += "\n\nEstado actual del sistema:\n" + req.Context
 	}
 
 	response, err := s.deps.AI.Query(req.Prompt, system)
 	if err != nil {
 		slog.Warn("ollama error", "error", err)
 		jsonOK(w, map[string]any{
-			"response": "El servicio de IA no está disponible en este momento.",
+			"response": "El servicio de IA no está disponible en este momento. Verificá que Ollama esté corriendo y tenga el modelo descargado.",
 			"source":   "fallback",
 		})
 		return

@@ -3,6 +3,7 @@ import { Layout } from '../components/Layout'
 import { api } from '../api/client'
 import { useEvents } from '../hooks/useEvents'
 import type { Ticket, TicketMessage, SSEEvent } from '../types'
+import { Plus, Send, Ticket as TicketIcon } from 'lucide-react'
 
 const STATUS_OPTS = ['open', 'in_progress', 'resolved', 'closed']
 const PRIORITY_COLOR: Record<string, string> = {
@@ -81,7 +82,8 @@ function TicketDetail({ ticket, onBack, onUpdate }: { ticket: Ticket; onBack: ()
           onKeyDown={e => e.key === 'Enter' && !e.shiftKey && sendMessage()}
           placeholder="Escribe un mensaje..." />
         <button className="btn btn-primary" onClick={sendMessage} disabled={sending || !content.trim()}>
-          {sending ? '⏳' : 'Enviar'}
+          {sending ? <span className="spinner spinner-sm" /> : <Send size={13} />}
+          {sending ? 'Enviando...' : 'Enviar'}
         </button>
       </div>
     </div>
@@ -131,14 +133,17 @@ export function Tickets() {
     <Layout title="Tickets">
       {/* Crear ticket manual */}
       <div className="card mb-16">
-        <div className="card-title mb-12">➕ Nuevo ticket</div>
+        <div className="flex items-center gap-8 mb-12">
+          <Plus size={15} color="var(--blue)" />
+          <div className="card-title">Nuevo ticket</div>
+        </div>
         <div className="flex gap-8">
           <input className="input" style={{ width: 160 }} value={newPc} onChange={e => setNewPc(e.target.value)} placeholder="Equipo (opcional)" />
           <input className="input flex-1" value={newMsg} onChange={e => setNewMsg(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && createTicket()}
             placeholder="Descripción del problema..." />
           <button className="btn btn-primary" onClick={createTicket} disabled={creating || !newMsg.trim()}>
-            {creating ? '⏳' : 'Crear'}
+            {creating ? <><span className="spinner spinner-sm" /> Creando...</> : <><Plus size={13} /> Crear</>}
           </button>
         </div>
       </div>
@@ -160,7 +165,10 @@ export function Tickets() {
         {loading ? (
           <div className="empty-state"><div className="loading spin" /></div>
         ) : filtered.length === 0 ? (
-          <div className="empty-state"><div className="empty-icon">🎫</div><div>Sin tickets {filter !== 'all' ? filter : ''}</div></div>
+          <div className="empty-state">
+            <div className="empty-state-icon"><TicketIcon size={40} color="var(--muted)" /></div>
+            <div className="empty-state-title">Sin tickets {filter !== 'all' ? filter : ''}</div>
+          </div>
         ) : (
           <div className="table-wrap">
             <table>

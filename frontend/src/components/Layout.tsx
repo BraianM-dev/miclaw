@@ -27,21 +27,15 @@ export function Layout({ children, title }: LayoutProps) {
   const [connected, setConnected] = useState(false)
 
   useEffect(() => {
-    const unsub = connectEvents((ev: SSEEvent) => {
-      if (ev.type === 'connected') setConnected(true)
-    })
-    // Si recibimos cualquier evento, estamos conectados
-    const origUnsub = connectEvents(() => setConnected(true))
-    setConnected(false)
-    const timer = setTimeout(() => {}, 2000)
-    return () => { unsub(); origUnsub(); clearTimeout(timer) }
-  }, [])
-
-  // Simpler connection check: just try to connect and mark connected
-  useEffect(() => {
     let alive = true
-    const unsub = connectEvents(() => { if (alive) setConnected(true) })
-    return () => { alive = false; unsub(); setConnected(false) }
+    const unsub = connectEvents((_ev: SSEEvent) => {
+      if (alive) setConnected(true)
+    })
+    return () => {
+      alive = false
+      unsub()
+      setConnected(false)
+    }
   }, [])
 
   return (

@@ -4,6 +4,10 @@ import { Layout } from '../components/Layout'
 import { api } from '../api/client'
 import { useEvents } from '../hooks/useEvents'
 import type { Agent, Heartbeat, Command, SSEEvent } from '../types'
+import {
+  ArrowLeft, Monitor, Activity, Terminal, ClipboardList,
+  Play, CheckCircle, XCircle, Clock,
+} from 'lucide-react'
 
 function MetricBar({ label, value, pct }: { label: string; value: string; pct: number }) {
   const color = pct > 90 ? 'danger' : pct > 70 ? 'warning' : 'success'
@@ -24,6 +28,10 @@ const COMMANDS = [
   'info_sistema', 'flush_dns', 'diagnostico', 'mantenimiento',
   'espacio_disco', 'listar_procesos', 'reiniciar_spooler', 'ver_logs_frank'
 ]
+
+const STATUS_BADGE: Record<string, string> = {
+  pending: 'warning', sent: 'info', done: 'success', failed: 'danger', timeout: 'offline'
+}
 
 export function AgentDetail() {
   const { id } = useParams<{ id: string }>()
@@ -68,29 +76,45 @@ export function AgentDetail() {
   const sendCommand = async () => {
     if (!id || !cmd) return
     setSending(true)
-    setCmdResult('⏳ Enviando comando...')
+    setCmdResult('Enviando comando...')
     try {
       const res = await api.sendCommand(id, cmd)
       setCmdResult(`Comando enviado (${res.id}). Esperando resultado...`)
     } catch (e) {
-      setCmdResult(`❌ Error: ${(e as Error).message}`)
+      setCmdResult(`Error: ${(e as Error).message}`)
     } finally { setSending(false) }
   }
 
   const latest = heartbeats[0]
 
-  if (loading) return <Layout title="Agente"><div className="empty-state"><div className="loading spin" /></div></Layout>
-  if (!agent) return <Layout title="Agente"><div className="empty-state">Agente no encontrado</div></Layout>
+  if (loading) return (
+    <Layout title="Agente">
+      <div className="loading-center"><span className="spinner spinner-lg" /></div>
+    </Layout>
+  )
+  if (!agent) return (
+    <Layout title="Agente">
+      <div className="empty-state">
+        <div className="empty-state-icon"><Monitor size={40} color="var(--muted)" /></div>
+        <div className="empty-state-title">Agente no encontrado</div>
+      </div>
+    </Layout>
+  )
 
   return (
     <Layout title={agent.name}>
-      <button className="btn btn-ghost btn-sm mb-16" onClick={() => nav('/agents')}>← Volver</button>
+      <button className="btn btn-ghost btn-sm mb-16" onClick={() => nav('/agents')}>
+        <ArrowLeft size={14} /> Volver a agentes
+      </button>
 
       <div className="grid-2" style={{ marginBottom: 20 }}>
         {/* Información */}
         <div className="card">
           <div className="card-header">
-            <span className="card-title">🖥️ Información</span>
+            <div className="flex items-center gap-8">
+              <Monitor size={15} color="var(--blue)" />
+              <span className="card-title">Información</span>
+            </div>
             <span className={`badge badge-${agent.status}`}>{agent.status}</span>
           </div>
           {[
@@ -113,17 +137,24 @@ export function AgentDetail() {
         {/* Métricas */}
         <div className="card">
           <div className="card-header">
-            <span className="card-title">📈 Métricas actuales</span>
-            {latest && <span className="text-small text-muted">{new Date(latest.ts).toLocaleTimeString('es-UY')}</span>}
+            <div className="flex items-center gap-8">
+              <Activity size={15} color="var(--blue)" />
+              <span className="card-title">Métricas actuales</span>
+            </div>
+            {latest && (
+              <span className="text-small text-muted flex items-center gap-4">
+                <Clock size={11} /> {new Date(latest.ts).toLocaleTimeString('es-UY')}
+              </span>
+            )}
           </div>
           {latest ? (
             <>
-              <MetricBar label="CPU" value={`${latest.cpu_pct.toFixed(1)}%`} pct={latest.cpu_pct} />
-              <MetricBar label="RAM" value={`${latest.mem_pct.toFixed(1)}%`} pct={latest.mem_pct} />
+              <MetricBar label="CPU"   value={`${latest.cpu_pct.toFixed(1)}%`}  pct={latest.cpu_pct}  />
+              <MetricBar label="RAM"   value={`${latest.mem_pct.toFixed(1)}%`}  pct={latest.mem_pct}  />
               <MetricBar label="Disco" value={`${latest.disk_pct.toFixed(1)}%`} pct={latest.disk_pct} />
             </>
           ) : (
-            <div className="text-muted text-small">Sin datos de heartbeat aún.</div>
+            <div className="empty-state text-small">Sin datos de heartbeat aún.</div>
           )}
         </div>
       </div>
@@ -131,22 +162,35 @@ export function AgentDetail() {
       {/* Consola remota */}
       <div className="card mb-16">
         <div className="card-header">
-          <span className="card-title">⌨️ Ejecutar comando</span>
+          <div className="flex items-center gap-8">
+            <Terminal size={15} color="var(--blue)" />
+            <span className="card-title">Ejecutar comando</span>
+          </div>
         </div>
         <div className="flex gap-8 mb-12">
           <select className="select" value={cmd} onChange={e => setCmd(e.target.value)} style={{ width: 220 }}>
             {COMMANDS.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
           <button className="btn btn-primary" onClick={sendCommand} disabled={sending}>
-            {sending ? '⏳' : '▶'} Ejecutar
+            {sending
+              ? <><span className="spinner spinner-sm" /> Enviando...</>
+              : <><Play size={13} /> Ejecutar</>
+            }
           </button>
         </div>
-        {cmdResult && <div className="code-block">{cmdResult}</div>}
+        {cmdResult && (
+          <div className="code-block" style={{ userSelect: 'text', WebkitUserSelect: 'text' }}>
+            {cmdResult}
+          </div>
+        )}
       </div>
 
       {/* Historial de comandos */}
       <div className="card">
-        <div className="card-title mb-12">📋 Últimos comandos</div>
+        <div className="flex items-center gap-8 mb-12">
+          <ClipboardList size={15} color="var(--blue)" />
+          <div className="card-title">Últimos comandos</div>
+        </div>
         {commands.length === 0 ? (
           <div className="text-muted text-small">Sin comandos ejecutados.</div>
         ) : (
@@ -159,8 +203,14 @@ export function AgentDetail() {
                 {commands.map(c => (
                   <tr key={c.id}>
                     <td><code style={{ fontSize: 12 }}>{c.command}</code></td>
-                    <td><span className={`badge badge-${c.status}`}>{c.status}</span></td>
-                    <td className="truncate" style={{ maxWidth: 300 }}>{c.result || '—'}</td>
+                    <td>
+                      <span className={`badge badge-${STATUS_BADGE[c.status] ?? 'info'}`}>
+                        {c.status === 'done'    && <CheckCircle size={10} />}
+                        {c.status === 'failed'  && <XCircle size={10} />}
+                        {c.status}
+                      </span>
+                    </td>
+                    <td className="truncate" style={{ maxWidth: 300, userSelect: 'text' }}>{c.result || '—'}</td>
                     <td className="text-muted text-small">{new Date(c.created_at).toLocaleString('es-UY')}</td>
                   </tr>
                 ))}
