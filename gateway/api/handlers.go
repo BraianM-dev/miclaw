@@ -597,7 +597,57 @@ func (s *Server) updateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 	ticket, _ := s.deps.DB.GetTicket(id)
 	s.deps.Hub.Broadcast(EvTicketUpdate, ticket)
+	go s.notifyAgentOfStatusChange(id, req.Status)
 	jsonOK(w, map[string]string{"status": req.Status})
+}
+
+// notifyAgentOfStatusChange envía al agente una notificación cuando el técnico cambia el estado del ticket.
+func (s *Server) notifyAgentOfStatusChange(ticketID int64, newStatus string) {
+	ticket, err := s.deps.DB.GetTicket(ticketID)
+	if err != nil || ticket.AgentID == "" {
+		return
+	}
+	agent, err := s.deps.DB.GetAgent(ticket.AgentID)
+	if err != nil {
+		slog.Warn("notifyAgentOfStatusChange: agente no encontrado", "agent_id", ticket.AgentID)
+		return
+	}
+
+	statusLabel := map[string]string{
+		"open":        "Abierto",
+		"in_progress": "En progreso",
+		"resolved":    "Resuelto",
+		"closed":      "Cerrado",
+	}
+	label := statusLabel[newStatus]
+	if label == "" {
+		label = newStatus
+	}
+
+	notification := map[string]string{
+		"type":      "status_change",
+		"message":   fmt.Sprintf("El estado del Ticket #%d fue actualizado a: %s", ticketID, label),
+		"ticket_id": fmt.Sprintf("%d", ticketID),
+		"status":    newStatus,
+	}
+	body, _ := json.Marshal(notification)
+
+	url := fmt.Sprintf("http://%s:%d/send_message", agent.IP, agent.Port)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", agent.AgentKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Warn("notifyAgentOfStatusChange: fallo al notificar", "agent", ticket.AgentID, "err", err)
+		return
+	}
+	resp.Body.Close()
+	slog.Info("notifyAgentOfStatusChange: agente notificado", "ticket", ticketID, "status", newStatus)
 }
 
 func (s *Server) addMessage(w http.ResponseWriter, r *http.Request) {
@@ -662,7 +712,8 @@ func (s *Server) notifyAgentOfTicketReply(ticketID int64, author, content string
 	}
 
 	notification := map[string]string{
-		"message":   fmt.Sprintf("[Ticket #%d] %s: %s", ticketID, author, content),
+		"type":      "reply",
+		"message":   fmt.Sprintf("%s: %s", author, content),
 		"ticket_id": fmt.Sprintf("%d", ticketID),
 		"author":    author,
 	}

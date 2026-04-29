@@ -1,0 +1,117 @@
+{
+  "generated_at": "2026-04-29T10:20:18.2013075-03:00",
+  "hostname": "PC-69",
+  "user": "rlarrosa",
+  "os": {
+    "arch": "64 bits",
+    "build": "26200",
+    "install": "20250207065107.000000-180",
+    "serial": "00331-10000-00001-AA804",
+    "version": "Microsoft Windows 11 Pro"
+  },
+  "cpu": {
+    "clock": "2901",
+    "cores": "6",
+    "name": "Intel(R) Core(TM) i5-9400 CPU @ 2.90GHz"
+  },
+  "memory": {
+    "free_mb": "5,24",
+    "total_gb": "15,88"
+  },
+  "disks": [
+    {
+      "drive": "C:",
+      "free_gb": "125.6",
+      "size_gb": "237.6"
+    },
+    {
+      "drive": "D:",
+      "free_gb": "199.4",
+      "size_gb": "238.4"
+    },
+    {
+      "drive": "E:",
+      "free_gb": "328.6",
+      "size_gb": "693"
+    }
+  ],
+  "network": [
+    {
+      "ip": "192.168.2.86,fe80::d6f:65a:323e:a8ec",
+      "mac": "1C:69:7A:1D:7F:37",
+      "name": "Realtek PCIe GbE Family Controller"
+    },
+    {
+      "ip": "192.168.56.1,fe80::94a8:e029:4feb:90ea",
+      "mac": "0A:00:27:00:00:0E",
+      "name": "VirtualBox Host-Only Ethernet Adapter"
+    }
+  ],
+  "software": [
+    "Microsoft Teams Meeting Add-in for Microsoft Office\r",
+    "Steam Link\r",
+    "Office 16 Click-to-Run Extensibility Component\r",
+    "Office 16 Click-to-Run Localization Component\r",
+    "Office 16 Click-to-Run Licensing Component\r",
+    "Microsoft Visual Studio Setup WMI Provider\r",
+    "vs_vswebprotocolselectormsires\r",
+    "Windows Team Extension SDK Contracts\r",
+    "vs_minshellmsires\r",
+    "Samsung DeX\r",
+    "Windows App Certification Kit SupportedApiList x86\r",
+    "Universal CRT Tools x64\r",
+    "LibreOffice 7.5.5.2\r",
+    "Microsoft Visual C++ 2022 X64 Minimum Runtime - 14.44.35211\r",
+    "Brother Printer Driver\r",
+    "Windows SDK Desktop Tools x64\r",
+    "DeviceDetect\r",
+    "UsbRepairTool\r",
+    "Brother Port Driver\r",
+    "Windows IoT Extension SDK Contracts\r",
+    "Application Verifier x64 External Package (OnecoreUAP)\r",
+    "vs_filehandler_x86\r",
+    "Brother Scanner Driver\r",
+    "vs_communitymsires\r",
+    "Microsoft Visual C++ 2022 X86 Debug Runtime - 14.44.35211\r",
+    "Windows SDK Redistributables\r",
+    "Universal General MIDI DLS Extension SDK\r",
+    "ScannerUtilityInstaller\r",
+    "vs_vswebprotocolselectormsi\r",
+    "Microsoft Visual C++ 2022 X86 Additional Runtime - 14.44.35211\r",
+    "Windows SDK for Windows Store Apps Headers OnecoreUap\r",
+    "Windows SDK Facade Windows WinMD Versioned\r",
+    "NetworkRepairTool\r",
+    "VS Script Debugging Common\r",
+    "Windows SDK for Windows Store Apps Metadata\r",
+    "WinRT Intellisense PPI - Other Languages\r",
+    "WinRT Intellisense PPI - en-us\r",
+    "Universal CRT Extension SDK\r",
+    "ControlCenter4\r",
+    "WinRT Intellisense Desktop - Other Languages\r",
+    "Windows SDK Desktop Libs arm64\r",
+    "SDK ARM64 Additions\r",
+    "StatusMonitor\r",
+    "Java 8 Update 481 (64-bit)\r",
+    "Windows SDK Desktop Headers arm64\r",
+    "Windows Mobile Extension SDK Contracts\r",
+    "Oracle VM VirtualBox 7.0.24\r",
+    "Node.js\r",
+    "Microsoft Visual C++ 2022 X86 Minimum Runtime - 14.44.35211\r",
+    "WinRT Intellisense IoT - Other Languages"
+  ],
+  "printers": [
+    "OneNote (Desktop)\r",
+    "PDF24 Fax\r",
+    "PDF24\r",
+    "Microsoft Print to PDF\r",
+    "Lexmark MS415dn\r",
+    "Lexmark MS410 Series\r",
+    "Fotocopia Control"
+  ],
+  "wazuh": {
+    "service": "No instalado"
+  },
+  "ocs": {
+    "service": "No instalado"
+  }
+}
