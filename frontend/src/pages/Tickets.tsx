@@ -10,16 +10,19 @@ const PRIORITY_COLOR: Record<string, string> = {
   critical: 'danger', high: 'warning', normal: 'info', low: 'offline'
 }
 
-function TicketDetail({ ticket, onBack, onUpdate }: { ticket: Ticket; onBack: () => void; onUpdate: () => void }) {
+function TicketDetail({ ticket, onBack, onUpdate, refreshTrigger }: {
+  ticket: Ticket; onBack: () => void; onUpdate: () => void; refreshTrigger: number
+}) {
   const [messages, setMessages] = useState<TicketMessage[]>([])
   const [author, setAuthor]     = useState('técnico')
   const [content, setContent]   = useState('')
   const [sending, setSending]   = useState(false)
   const [status, setStatus]     = useState(ticket.status)
 
+  // Cargar mensajes al abrir y cuando llega un SSE ticket_update
   useEffect(() => {
     api.messages(ticket.id).then(setMessages).catch(() => {})
-  }, [ticket.id])
+  }, [ticket.id, refreshTrigger])
 
   const changeStatus = async (s: string) => {
     setStatus(s as Ticket['status'])
@@ -62,17 +65,28 @@ function TicketDetail({ ticket, onBack, onUpdate }: { ticket: Ticket; onBack: ()
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 0', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {messages.map(m => (
-          <div key={m.id}>
-            <div className="flex gap-8 mb-4">
-              <span style={{ fontWeight: 600, fontSize: 12 }}>{m.author}</span>
-              <span className="text-muted text-small">{new Date(m.ts).toLocaleString('es-UY')}</span>
+        {messages.map(m => {
+          const isSupport = m.author !== 'Usuario' && m.author !== ticket.username
+          return (
+            <div key={m.id} style={{ alignSelf: isSupport ? 'flex-start' : 'flex-end', maxWidth: '85%' }}>
+              <div className="flex gap-8 mb-4" style={{ justifyContent: isSupport ? 'flex-start' : 'flex-end' }}>
+                <span style={{ fontWeight: 600, fontSize: 12, color: isSupport ? 'var(--blue)' : 'var(--text)' }}>
+                  {isSupport ? '🔧 ' : '👤 '}{m.author}
+                </span>
+                <span className="text-muted text-small">{new Date(m.ts).toLocaleString('es-UY')}</span>
+              </div>
+              <div style={{
+                padding: '8px 12px',
+                background: isSupport ? 'rgba(56,139,253,0.1)' : 'var(--surface2)',
+                border: isSupport ? '1px solid rgba(56,139,253,0.25)' : '1px solid var(--border)',
+                borderRadius: 'var(--radius-sm)', fontSize: 13,
+                userSelect: 'text', whiteSpace: 'pre-wrap',
+              }}>
+                {m.content}
+              </div>
             </div>
-            <div style={{ padding: '8px 12px', background: 'var(--surface2)', borderRadius: 'var(--radius-sm)', fontSize: 13 }}>
-              {m.content}
-            </div>
-          </div>
-        ))}
+          )
+        })}
         {messages.length === 0 && <div className="text-muted text-small">Sin mensajes aún.</div>}
       </div>
 
@@ -91,13 +105,14 @@ function TicketDetail({ ticket, onBack, onUpdate }: { ticket: Ticket; onBack: ()
 }
 
 export function Tickets() {
-  const [tickets, setTickets]   = useState<Ticket[]>([])
-  const [selected, setSelected] = useState<Ticket | null>(null)
-  const [filter, setFilter]     = useState('open')
-  const [loading, setLoading]   = useState(true)
-  const [creating, setCreating] = useState(false)
-  const [newMsg, setNewMsg]     = useState('')
-  const [newPc, setNewPc]       = useState('')
+  const [tickets, setTickets]       = useState<Ticket[]>([])
+  const [selected, setSelected]     = useState<Ticket | null>(null)
+  const [filter, setFilter]         = useState('open')
+  const [loading, setLoading]       = useState(true)
+  const [creating, setCreating]     = useState(false)
+  const [newMsg, setNewMsg]         = useState('')
+  const [newPc, setNewPc]           = useState('')
+  const [msgRefresh, setMsgRefresh] = useState(0)
 
   const load = useCallback(async () => {
     try { setTickets(await api.tickets(undefined, 100)) } finally { setLoading(false) }
@@ -106,7 +121,10 @@ export function Tickets() {
   useEffect(() => { load() }, [load])
 
   useEvents(useCallback((ev: SSEEvent) => {
-    if (ev.type === 'ticket_update') load()
+    if (ev.type === 'ticket_update') {
+      load()
+      setMsgRefresh(n => n + 1) // trigger message refresh in detail view
+    }
   }, [load]))
 
   const createTicket = async () => {
@@ -124,7 +142,7 @@ export function Tickets() {
   if (selected) {
     return (
       <Layout title={`Ticket #${selected.id}`}>
-        <TicketDetail ticket={selected} onBack={() => setSelected(null)} onUpdate={load} />
+        <TicketDetail ticket={selected} onBack={() => setSelected(null)} onUpdate={load} refreshTrigger={msgRefresh} />
       </Layout>
     )
   }

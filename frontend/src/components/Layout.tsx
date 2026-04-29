@@ -28,9 +28,10 @@ export function Layout({ children, title }: LayoutProps) {
 
   useEffect(() => {
     let alive = true
-    const unsub = connectEvents((_ev: SSEEvent) => {
-      if (alive) setConnected(true)
-    })
+    const unsub = connectEvents(
+      (_ev: SSEEvent) => { if (alive) setConnected(true) },
+      ()              => { if (alive) setConnected(false) },
+    )
     return () => {
       alive = false
       unsub()

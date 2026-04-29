@@ -628,7 +628,62 @@ func (s *Server) addMessage(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "db error", http.StatusInternalServerError)
 		return
 	}
+	// Broadcast SSE para que el dashboard actualice el hilo del ticket en tiempo real
+	s.deps.Hub.Broadcast(EvTicketUpdate, map[string]any{
+		"ticket_id": ticketID,
+		"message_id": id,
+		"author":    req.Author,
+	})
+
+	// Si el mensaje es del equipo de soporte, notificar al agente en tiempo real
+	go s.notifyAgentOfTicketReply(ticketID, req.Author, req.Content)
+
 	jsonOK(w, map[string]any{"id": id})
+}
+
+// notifyAgentOfTicketReply envía el mensaje de soporte al agente del equipo afectado.
+// Se ejecuta en background para no bloquear la respuesta HTTP.
+func (s *Server) notifyAgentOfTicketReply(ticketID int64, author, content string) {
+	// No notificar mensajes generados por el propio usuario o el sistema automático
+	lower := strings.ToLower(author)
+	if lower == "" || lower == "sistema" || lower == "usuario" || lower == "frank" {
+		return
+	}
+
+	ticket, err := s.deps.DB.GetTicket(ticketID)
+	if err != nil || ticket.AgentID == "" {
+		return
+	}
+
+	agent, err := s.deps.DB.GetAgent(ticket.AgentID)
+	if err != nil {
+		slog.Warn("notifyAgentOfTicketReply: agente no encontrado", "agent_id", ticket.AgentID)
+		return
+	}
+
+	notification := map[string]string{
+		"message":   fmt.Sprintf("[Ticket #%d] %s: %s", ticketID, author, content),
+		"ticket_id": fmt.Sprintf("%d", ticketID),
+		"author":    author,
+	}
+	body, _ := json.Marshal(notification)
+
+	url := fmt.Sprintf("http://%s:%d/send_message", agent.IP, agent.Port)
+	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-API-Key", agent.AgentKey)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Warn("notifyAgentOfTicketReply: fallo al notificar", "agent", ticket.AgentID, "err", err)
+		return
+	}
+	resp.Body.Close()
+	slog.Info("notifyAgentOfTicketReply: agente notificado", "ticket", ticketID, "agent", ticket.AgentID)
 }
 
 func (s *Server) getMessages(w http.ResponseWriter, r *http.Request) {
@@ -649,6 +704,81 @@ func (s *Server) getMessages(w http.ResponseWriter, r *http.Request) {
 }
 
 // ── AI ─────────────────────────────────────────────────────────────────────
+
+// ── AI structured-response types ───────────────────────────────────────────
+
+// aiResponseType is the discriminator for the safe-action model.
+type aiResponseType string
+
+const (
+	aiRespMessage       aiResponseType = "message"
+	aiRespActionRequest aiResponseType = "action_request"
+)
+
+// aiStructuredResponse is the canonical JSON shape returned by both the LLM
+// and the /ai/query endpoint.  Fields are a superset of both sub-types.
+type aiStructuredResponse struct {
+	Type       aiResponseType `json:"type"`
+	// For type=message
+	Content    string         `json:"content,omitempty"`
+	// For type=action_request
+	Action     string         `json:"action,omitempty"`
+	Target     string         `json:"target,omitempty"`
+	Message    string         `json:"message,omitempty"`
+	Confidence float64        `json:"confidence,omitempty"`
+	// Always present in the HTTP response
+	Source     string         `json:"source"`
+	// Convenience flat field so the frontend can use .response for plain text
+	Response   string         `json:"response,omitempty"`
+}
+
+// availableActions is the canonical list of commands the agent understands.
+var availableActions = []string{
+	// Diagnóstico / información
+	"info_sistema", "diagnostico", "espacio_disco", "listar_procesos",
+	"ver_logs_frank", "generar_inventario", "ver_servicios", "ver_usuarios_activos",
+	"ram_detalle", "gpu_info", "salud_disco", "uptime_sistema",
+	// Red
+	"estado_red", "velocidad_red", "flush_dns", "conexiones_activas",
+	"latencia_red", "escaneo_red",
+	// Mantenimiento / reparación
+	"mantenimiento", "reiniciar_spooler", "reparar_winsock", "limpiar_temporales",
+	// Control remoto
+	"bloquear_pantalla", "popup_mensaje", "abrir_taskmanager",
+	"matar_proceso", "reiniciar_servicio", "abrir_aplicacion",
+	// Seguridad
+	"estado_defender", "actualizaciones_instaladas",
+}
+
+// aiSystemPromptJSON instructs the LLM to return ONLY structured JSON
+// and to never execute actions — it must propose and wait for confirmation.
+const aiSystemPromptJSON = `Eres un asistente de soporte IT para MicLaw/AFE (Ferrocarriles del Estado - Uruguay).
+
+REGLA CRÍTICA — MODELO DE ACCIONES SEGURAS:
+NUNCA ejecutes acciones directamente. Cuando el usuario pide ejecutar algo,
+SIEMPRE propone la acción y espera confirmación explícita del usuario.
+
+Responde SOLO con JSON válido, sin texto fuera del JSON.
+
+FORMATO A — Respuesta informativa (sin acción):
+{"type":"message","content":"tu respuesta en español rioplatense, máximo 3 oraciones"}
+
+FORMATO B — Propuesta de acción (requiere confirmación del usuario):
+{"type":"action_request","action":"nombre_accion","target":"ID_exacto_del_agente","message":"explicación clara de qué hará y por qué","confidence":0.85}
+
+Acciones disponibles (SOLO estas):
+info_sistema, flush_dns, diagnostico, mantenimiento, espacio_disco,
+listar_procesos, reiniciar_spooler, estado_red, ver_logs_frank,
+velocidad_red, generar_inventario
+
+REGLAS:
+1. Solo respondés sobre soporte IT empresarial. Fuera de ese dominio:
+   {"type":"message","content":"Solo puedo ayudarte con soporte IT empresarial."}
+2. El campo "target" DEBE ser el ID exacto de la lista de agentes registrados.
+3. Si hay varios agentes y no se especifica cuál, pedí clarificación con tipo "message".
+4. "confidence" entre 0.0 y 1.0.
+5. Responde en español rioplatense, conciso y técnico.
+6. Si la intención no está clara, pedí aclaración con tipo "message".`
 
 // itDomainKeywords are terms that clearly indicate an IT-related query.
 var itDomainKeywords = []string{
@@ -710,7 +840,6 @@ func (s *Server) aiQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Prompt  string `json:"prompt"`
 		Context string `json:"context"`
-		Format  string `json:"format"`
 	}
 	if err := decode(r, &req); err != nil {
 		jsonError(w, "invalid body", http.StatusBadRequest)
@@ -724,28 +853,112 @@ func (s *Server) aiQuery(w http.ResponseWriter, r *http.Request) {
 	// Pre-filter: reject clearly off-domain queries before hitting the LLM
 	if !isITRelated(req.Prompt) {
 		slog.Info("ai query rejected (off-domain)", "prompt_len", len(req.Prompt))
-		jsonOK(w, map[string]any{
-			"response": "Solo puedo ayudarte con temas de soporte IT empresarial. ¿Tenés algún problema técnico con algún equipo o sistema?",
-			"source":   "filter",
+		jsonOK(w, aiStructuredResponse{
+			Type:     aiRespMessage,
+			Content:  "Solo puedo ayudarte con temas de soporte IT empresarial. ¿Tenés algún problema técnico con algún equipo o sistema?",
+			Response: "Solo puedo ayudarte con temas de soporte IT empresarial. ¿Tenés algún problema técnico con algún equipo o sistema?",
+			Source:   "filter",
 		})
 		return
 	}
 
-	system := aiSystemPrompt
+	// Build system context: registered agents (IDs are needed for action targets)
+	system := aiSystemPromptJSON
+	agents, _ := s.deps.DB.ListAgents()
+	if len(agents) > 0 {
+		system += "\n\nAgentes registrados (usá el ID exacto como \"target\"):\n"
+		for _, a := range agents {
+			statusStr := "online"
+			if a.Status != "ok" {
+				statusStr = a.Status
+			}
+			system += fmt.Sprintf("  ID=%s  nombre=%s  ip=%s  [%s]\n", a.ID, a.Name, a.IP, statusStr)
+		}
+	}
 	if req.Context != "" {
-		system += "\n\nEstado actual del sistema:\n" + req.Context
+		system += "\nEstado actual del sistema:\n" + req.Context
 	}
 
-	response, err := s.deps.AI.Query(req.Prompt, system)
+	// Call Ollama in JSON mode — forces valid JSON output
+	raw, err := s.deps.AI.QueryJSON(req.Prompt, system)
 	if err != nil {
 		slog.Warn("ollama error", "error", err)
-		jsonOK(w, map[string]any{
-			"response": "El servicio de IA no está disponible en este momento. Verificá que Ollama esté corriendo y tenga el modelo descargado.",
-			"source":   "fallback",
+		jsonOK(w, aiStructuredResponse{
+			Type:     aiRespMessage,
+			Content:  "El servicio de IA no está disponible. Verificá que Ollama esté corriendo y tenga el modelo descargado.",
+			Response: "El servicio de IA no está disponible. Verificá que Ollama esté corriendo y tenga el modelo descargado.",
+			Source:   "fallback",
 		})
 		return
 	}
-	jsonOK(w, map[string]any{"response": response, "source": "ollama"})
+
+	// Parse the structured LLM response
+	parsed, parseErr := parseAIResponse(raw)
+	if parseErr != nil {
+		// LLM produced something that isn't valid JSON — return as plain message
+		slog.Warn("ai response parse failed, falling back to plain text", "error", parseErr)
+		jsonOK(w, aiStructuredResponse{
+			Type:     aiRespMessage,
+			Content:  raw,
+			Response: raw,
+			Source:   "ollama",
+		})
+		return
+	}
+
+	// Validate action_request fields
+	if parsed.Type == aiRespActionRequest {
+		if !isValidAction(parsed.Action) {
+			slog.Warn("ai proposed unknown action, demoting to message", "action", parsed.Action)
+			parsed.Type    = aiRespMessage
+			parsed.Content = parsed.Message
+		}
+		if parsed.Target == "" {
+			parsed.Type    = aiRespMessage
+			parsed.Content = parsed.Message + "\n(No se pudo determinar el equipo destino. Especificá el nombre del equipo.)"
+		}
+	}
+
+	// Populate the flat .response field for backwards-compat with older clients
+	switch parsed.Type {
+	case aiRespMessage:
+		parsed.Response = parsed.Content
+	case aiRespActionRequest:
+		parsed.Response = parsed.Message
+	}
+	parsed.Source = "ollama"
+
+	slog.Info("ai response", "type", parsed.Type, "action", parsed.Action, "target", parsed.Target)
+	jsonOK(w, parsed)
+}
+
+// parseAIResponse attempts to unmarshal the raw LLM string into aiStructuredResponse.
+func parseAIResponse(raw string) (aiStructuredResponse, error) {
+	// Trim whitespace and possible markdown fences
+	raw = strings.TrimSpace(raw)
+	raw = strings.TrimPrefix(raw, "```json")
+	raw = strings.TrimPrefix(raw, "```")
+	raw = strings.TrimSuffix(raw, "```")
+	raw = strings.TrimSpace(raw)
+
+	var r aiStructuredResponse
+	if err := json.Unmarshal([]byte(raw), &r); err != nil {
+		return r, err
+	}
+	if r.Type == "" {
+		return r, fmt.Errorf("missing type field")
+	}
+	return r, nil
+}
+
+// isValidAction returns true if the action name is in the allowed list.
+func isValidAction(action string) bool {
+	for _, a := range availableActions {
+		if a == action {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Dashboard ──────────────────────────────────────────────────────────────

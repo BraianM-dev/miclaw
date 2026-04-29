@@ -17,6 +17,7 @@ gateway/gateway
 # Environment
 .env
 .env.*
+frank.env
 
 # OS
 .DS_Store

@@ -591,8 +591,14 @@ var (
 
 // ========================= INICIALIZACIÓN =========================
 func init() {
-	gatewayURL = getEnv("MICLAW_GATEWAY", "http://192.168.1.246:3001")
-	agentAPIKey = getEnv("AGENT_API_KEY", generateRandomKey(32))
+	// Cargar configuración desde frank.env (si existe junto al ejecutable)
+	// ANTES de leer env vars, para que OS env vars tengan precedencia.
+	loadLocalConfig()
+
+	gatewayURL  = getEnv("MICLAW_GATEWAY",  "http://192.168.1.246:3001")
+	// Debe coincidir con MICLAW_AGENT_KEY del gateway.
+	// Prioridad: OS env var → frank.env → "changeme"
+	agentAPIKey = getEnv("AGENT_API_KEY", "changeme")
 	// agentSecret debe ser estable entre reinicios para que los archivos
 	// encriptados (settings.enc, user_profile.enc, etc.) se puedan leer.
 	// Usamos el MachineGuid de Windows como base; si falla, el hostname.
@@ -947,6 +953,54 @@ func getEnv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// loadLocalConfig carga variables de entorno desde frank.env ubicado junto al ejecutable.
+// Formato: clave=valor por línea, comentarios con #.
+// Las variables ya presentes en el entorno del SO tienen precedencia.
+// Esto permite distribuir un frank.env con cada instalación del agente
+// sin depender de variables de entorno del sistema operativo.
+func loadLocalConfig() {
+	// Buscar frank.env junto al ejecutable
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	cfgPath := filepath.Join(filepath.Dir(exePath), "frank.env")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		// Intentar también en el directorio de trabajo actual
+		data, err = os.ReadFile("frank.env")
+		if err != nil {
+			return // no existe, usar defaults
+		}
+	}
+
+	loaded := 0
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+		// Eliminar comillas opcionales del valor
+		if len(val) >= 2 && val[0] == '"' && val[len(val)-1] == '"' {
+			val = val[1 : len(val)-1]
+		}
+		// Solo setear si NO está ya en el entorno del OS
+		if os.Getenv(key) == "" {
+			os.Setenv(key, val)
+			loaded++
+		}
+	}
+	if loaded > 0 {
+		log.Printf("[FRANK] Configuración cargada desde frank.env (%d variables)", loaded)
+	}
 }
 
 func generateRandomKey(length int) string {
@@ -1398,10 +1452,41 @@ func initializeNLU() {
 			"necesito un teclado", "necesito un monitor", "necesito una pc",
 			"necesito una computadora", "necesito una fuente", "necesito un cable",
 			"necesito un adaptador",
+			// variantes con solicitar / quiero / pedir
+			"solicitar un mouse", "quiero un mouse", "pedir un mouse",
+			"solicitar un teclado", "quiero un teclado", "pedir un teclado",
+			"solicitar un monitor", "quiero un monitor",
+			"solicitar un pendrive", "pedir un pendrive",
+			"solicitar una computadora", "quiero una pc", "necesito una notebook",
+			"me falta un mouse", "me falta un teclado",
+			"me hace falta un mouse", "me hace falta un teclado",
+			"quisiera solicitar un mouse", "quisiera un teclado",
+			"preciso un mouse", "preciso un teclado",
 		},
 		"solicitud_almacen": {
 			"necesito toner", "me falta papel", "necesito una impresora",
 			"necesito un disco duro", "necesito memoria ram", "requiero toner",
+			"solicitar toner", "quiero papel", "pedir cartuchos",
+			"solicitar memoria ram", "necesito un cartucho",
+		},
+		// Tickets
+		"ver_tickets": {
+			"ver mis tickets", "mostrar tickets", "ver historial de tickets",
+			"que tickets tengo", "listar tickets", "mis solicitudes de soporte",
+			"ver todas las solicitudes", "tickets generados",
+		},
+		"ver_tickets_abiertos": {
+			"tickets abiertos", "que tickets tengo pendientes", "solicitudes sin resolver",
+			"hay algún ticket abierto", "ver tickets pendientes", "tickets en curso",
+			"solicitudes activas", "cuales son mis tickets abiertos",
+		},
+		"ver_tickets_cerrados": {
+			"tickets cerrados", "tickets resueltos", "historial de solicitudes cerradas",
+			"solicitudes completadas", "ver tickets resueltos", "historial soporte",
+		},
+		"nuevo_ticket": {
+			"abrir ticket", "crear ticket", "nuevo ticket", "quiero abrir una solicitud",
+			"generar un ticket de soporte", "reportar un problema formal",
 		},
 		"buscar_archivo": {
 			"busca factura.pdf", "buscar contrato", "encuentra el archivo",
@@ -2040,9 +2125,27 @@ func keywordMatch(input string) string {
 		return "diagnostico_ram"
 	case has("diagnostico de memoria", "memoria ram", "test de ram"):
 		return "diagnostico_ram"
+	// Consultas de tickets
+	case has("ticket") && has("abierto", "pendiente", "activo", "sin resolver", "en curso"):
+		return "ver_tickets_abiertos"
+	case has("ticket") && has("cerrado", "resuelto", "completado", "finalizado", "historial"):
+		return "ver_tickets_cerrados"
+	case has("mis ticket", "ver ticket", "listar ticket", "historial ticket", "todas mis solicitud"):
+		return "ver_tickets"
+	case has("abrir ticket", "crear ticket", "nuevo ticket", "generar ticket", "abrir solicitud"):
+		return "nuevo_ticket"
 	case has("solicitud") && has("it", "informatica", "soporte"):
 		return "solicitud_it_local"
+	// Solicitud de hardware/periférico con verbos de pedido
+	case has("necesito", "quiero", "solicito", "solicitar", "requiero", "pedir", "pedido", "preciso") &&
+		has("mouse", "raton", "ratón", "teclado", "monitor", "pantalla", "pendrive", "usb",
+			"computadora", "pc ", " pc", "laptop", "notebook", "cable", "adaptador",
+			"fuente", "disco", "memoria", "ram", "auricular", "webcam", "camara", "microfono"):
+		return "solicitud_it_local"
 	case has("toner", "papel impresora", "cartucho", "tinta"):
+		return "solicitud_almacen"
+	case has("necesito", "quiero", "solicito", "solicitar", "requiero", "pedir") &&
+		has("toner", "papel", "cartucho", "tinta", "impresora", "disco duro", "memoria ram"):
 		return "solicitud_almacen"
 	case has("puerto usb") && has("abrir", "habilitar"):
 		return "abrir_puerto_usb"
@@ -3154,6 +3257,12 @@ var actionMap = map[string]func(string, *Memory) string{
 	"solicitud_it_local": handleITLocalRequest,
 	"solicitud_almacen":  handleWarehouseRequest,
 
+	// Tickets
+	"ver_tickets":          handleVerTickets,
+	"ver_tickets_abiertos": handleVerTicketsAbiertos,
+	"ver_tickets_cerrados": handleVerTicketsCerrados,
+	"nuevo_ticket":         handleNuevoTicket,
+
 	// PC lenta
 	"problema_pc_lenta": handleSlowPC,
 
@@ -3303,7 +3412,90 @@ func rollbackLastAction(input string, mem *Memory) string {
 
 // ========================= GESTIÓN DE RECURSOS =========================
 func handleITLocalRequest(input string, mem *Memory) string {
-	return "✅ El área de IT gestiona este recurso. Se ha registrado tu solicitud internamente."
+	go sendTicket(input, "hardware")
+	return "🖥️ Solicitud registrada. El área de IT recibirá el ticket y se contactará contigo a la brevedad."
+}
+
+// ── Consultas de tickets al gateway ──────────────────────────────────────────
+
+func queryTicketsFromGateway(status string) string {
+	if gatewayURL == "" {
+		return "❌ Frank no tiene conexión con el gateway ahora mismo."
+	}
+	endpoint := gatewayURL + "/tickets?limit=20"
+	if status != "" {
+		endpoint += "&status=" + status
+	}
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return "❌ Error interno al armar la consulta."
+	}
+	req.Header.Set("X-API-Key", agentAPIKey)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "❌ No se pudo conectar al gateway: " + err.Error()
+	}
+	defer resp.Body.Close()
+
+	var tickets []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&tickets); err != nil || len(tickets) == 0 {
+		labels := map[string]string{
+			"":         "tickets",
+			"open":     "tickets abiertos",
+			"closed":   "tickets cerrados",
+			"resolved": "tickets resueltos",
+		}
+		return "✅ No hay " + labels[status] + " en el sistema."
+	}
+
+	labelTitle := map[string]string{
+		"":         "📋 Todos tus tickets",
+		"open":     "🔴 Tickets abiertos",
+		"closed":   "🟢 Tickets cerrados",
+		"resolved": "🟢 Tickets resueltos",
+	}
+	statusIcon := map[string]string{
+		"open":        "🔴",
+		"in_progress": "🟡",
+		"closed":      "🟢",
+		"resolved":    "🟢",
+	}
+
+	var sb strings.Builder
+	sb.WriteString(labelTitle[status] + ":\n\n")
+	for _, t := range tickets {
+		id, _ := t["id"].(float64)
+		msg, _ := t["message"].(string)
+		st, _ := t["status"].(string)
+		cat, _ := t["category"].(string)
+		icon := statusIcon[st]
+		if icon == "" {
+			icon = "⚪"
+		}
+		if len(msg) > 70 {
+			msg = msg[:70] + "…"
+		}
+		sb.WriteString(fmt.Sprintf("%s #%d [%s] %s — %s\n", icon, int(id), cat, st, msg))
+	}
+	sb.WriteString(fmt.Sprintf("\nTotal: %d ticket(s)", len(tickets)))
+	return sb.String()
+}
+
+func handleVerTickets(input string, mem *Memory) string     { return queryTicketsFromGateway("") }
+func handleVerTicketsAbiertos(input string, mem *Memory) string { return queryTicketsFromGateway("open") }
+func handleVerTicketsCerrados(input string, mem *Memory) string { return queryTicketsFromGateway("closed") }
+
+func handleNuevoTicket(input string, mem *Memory) string {
+	return confirmDo(mem, "nuevo_ticket",
+		"📝 ¿Querés que abra un nuevo ticket de soporte con tu descripción? (Sí / No)\n"+
+			"Descripción: \""+input+"\"",
+		func(answer string) string {
+			go sendTicket(input, "soporte")
+			return "✅ Ticket creado y enviado al equipo de IT."
+		},
+		func() string { return "❌ Ticket cancelado. Cuando quieras, decime cuál es el problema." },
+	)
 }
 
 func handleWarehouseRequest(input string, mem *Memory) string {
@@ -5477,7 +5669,11 @@ func askGateway(input string, mem *Memory) string {
 
 // ========================= TICKETS =========================
 func sendTicket(message, category string) {
-	logger.Printf("[INFO] Ticket enviado: %s - %s", category, message)
+	hostname, _ := os.Hostname()
+	username := os.Getenv("USERNAME")
+	// Usar el sistema de cola con reintentos de refactor.go
+	EnqueueTicket(hostname, username, message, category)
+	logger.Printf("[INFO] Ticket encolado: category=%s message=%q", category, message)
 }
 // ========================= UI =========================
 func buildUI() {
@@ -5553,7 +5749,8 @@ func processMessage(text string, input *widget.Entry, btn *widget.Button) {
 	input.Disable()
 	btn.Disable()
 
-	thinkingLbl := widget.NewLabel("🤖 Frank está procesando...")
+	// ── Animated thinking bubble ──────────────────────────────────────────
+	thinkingLbl := widget.NewLabel("🤔 Pensando")
 	thinkingLbl.Importance = widget.LowImportance
 	thinkingBubble := container.NewHBox(thinkingLbl)
 	chatVBox.Add(thinkingBubble)
@@ -5562,15 +5759,50 @@ func processMessage(text string, input *widget.Entry, btn *widget.Button) {
 		chatScrollNew.ScrollToBottom()
 	}
 
+	// stopAnim is closed by the processing goroutine to stop the animation.
+	stopAnim := make(chan struct{})
+
+	go func() {
+		// Cycle through phases (4 ticks each) and dots (1 tick each).
+		phases := []string{
+			"🤔 Pensando",
+			"🔍 Analizando",
+			"⚙️  Procesando",
+			"💡 Buscando respuesta",
+			"🧠 Consultando base de conocimiento",
+		}
+		dots := []string{"", " .", " . .", " . . ."}
+		ticker := time.NewTicker(400 * time.Millisecond)
+		defer ticker.Stop()
+		i := 0
+		for {
+			select {
+			case <-ticker.C:
+				i++
+				phase := phases[(i/4)%len(phases)]
+				dot   := dots[i%len(dots)]
+				label := phase + dot
+				fyne.Do(func() { thinkingLbl.SetText(label) })
+			case <-stopAnim:
+				return
+			}
+		}
+	}()
+
 	go func(msg string) {
 		defer func() {
+			// Always stop animation and re-enable input, even on panic.
+			close(stopAnim)
 			fyne.Do(func() {
+				chatVBox.Remove(thinkingBubble)
 				input.Enable()
 				btn.Enable()
 				mainWindow.Canvas().Focus(input)
 			})
 		}()
+
 		resp := processUserMessage(msg, &memory)
+
 		// Guardar respuesta en memoria conversacional de sesión.
 		memory.mu.Lock()
 		memory.LastAssistantMessages = append(memory.LastAssistantMessages, resp)
@@ -5579,14 +5811,24 @@ func processMessage(text string, input *widget.Entry, btn *widget.Button) {
 		}
 		memory.LastAssistantMsg = resp
 		memory.mu.Unlock()
-		// formatResponse aplica preferencias del usuario: emojis y personalidad.
+
+		// Verificar si Frank quedó esperando confirmación del usuario
+		memory.mu.RLock()
+		hasPending := memory.PendingConfirmation != nil
+		memory.mu.RUnlock()
+
 		displayed := formatResponse(resp)
 		fyne.Do(func() {
-			chatVBox.Remove(thinkingBubble)
-			addBubble("frank", displayed)
+			if hasPending {
+				// Mostrar burbuja con botones SI/NO clickeables
+				addConfirmationBubble(displayed, input, btn)
+			} else {
+				addBubble("frank", displayed)
+			}
 		})
+
 		addToHistory("user", msg)
-		addToHistory("assistant", resp) // guardar respuesta original en historial
+		addToHistory("assistant", resp)
 	}(text)
 }
 
@@ -5960,15 +6202,129 @@ func startCommandListener() {
 			return
 		}
 		var response string
+		p := cmd.Params // shorthand
 		switch cmd.Action {
+
+		// ── Diagnóstico / información ────────────────────────────────────────
+		case "info_sistema":
+			response = getSystemInfo("", &memory)
+		case "diagnostico":
+			response = getSystemInfo("", &memory)
+		case "espacio_disco":
+			response = diagnoseDiskSpace("", &memory)
+		case "listar_procesos":
+			response = listProcesses("", &memory)
+		case "ver_logs_frank":
+			response = analyzeFrankLogs("", &memory)
+		case "generar_inventario":
+			response = generateFullInventory("", &memory)
+		case "uptime_sistema":
+			response = getSystemUptime("", &memory)
+		case "ram_detalle":
+			response = getDetailedRAM("", &memory)
+		case "gpu_info":
+			response = getGPUInfo("", &memory)
+		case "salud_disco":
+			response = checkDiskHealth("", &memory)
+		case "ver_eventos_sistema":
+			response = getSystemEvents("", &memory)
+
+		// ── Servicios ────────────────────────────────────────────────────────
+		case "ver_servicios":
+			response = psRun(`Get-Service | Where-Object {$_.Status -eq 'Running'} | Select-Object -First 40 Name,Status,DisplayName | Format-Table -AutoSize | Out-String`)
+		case "reiniciar_servicio":
+			nombre := p["nombre"]
+			if nombre == "" {
+				response = "❌ Falta el parámetro 'nombre' del servicio."
+			} else {
+				out := psRun(fmt.Sprintf(`Restart-Service -Name '%s' -Force -PassThru | Select-Object Name,Status | Format-Table | Out-String`, nombre))
+				response = "🔄 Servicio '" + nombre + "' reiniciado:\n" + out
+			}
+
+		// ── Procesos ─────────────────────────────────────────────────────────
+		case "matar_proceso":
+			nombre := p["nombre"]
+			if nombre == "" {
+				response = "❌ Falta el parámetro 'nombre' del proceso."
+			} else {
+				out := psRun(fmt.Sprintf(`Stop-Process -Name '%s' -Force -ErrorAction SilentlyContinue; "Proceso '%s' terminado."`, nombre, nombre))
+				response = out
+			}
+
+		// ── Red ──────────────────────────────────────────────────────────────
+		case "estado_red":
+			response = fixNetwork("", &memory)
+		case "velocidad_red":
+			response = networkSpeedTest("", &memory)
 		case "flush_dns":
 			response = flushDNS("", &memory)
+		case "conexiones_activas":
+			response = netstat("", &memory)
+		case "latencia_red":
+			response = checkNetworkLatency("", &memory)
+		case "escaneo_red":
+			response = scanLocalNetwork("", &memory)
+
+		// ── Mantenimiento ────────────────────────────────────────────────────
+		case "mantenimiento":
+			response = startMaintenance("", &memory)
+		case "reiniciar_spooler":
+			response = fixPrinter("", &memory)
+		case "reparar_winsock":
+			response = repairWinsock("", &memory)
+		case "limpiar_temporales":
+			response = systemCleanupDeep("", &memory)
+
+		// ── Control remoto / UI ───────────────────────────────────────────────
+		case "bloquear_pantalla":
+			response = lockWorkstation("", &memory)
+		case "popup_mensaje":
+			msg := p["mensaje"]
+			if msg == "" {
+				msg = p["message"]
+			}
+			if msg == "" {
+				response = "❌ Falta el parámetro 'mensaje'."
+			} else {
+				titulo := p["titulo"]
+				if titulo == "" {
+					titulo = "MicLaw IT Support"
+				}
+				psRun(fmt.Sprintf(`Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('%s','%s','OK','Information')`, msg, titulo))
+				response = "✅ Mensaje mostrado al usuario."
+			}
+		case "abrir_taskmanager":
+			exec.Command("taskmgr.exe").Start()
+			response = "✅ Administrador de tareas abierto."
+		case "abrir_aplicacion":
+			nombre := p["nombre"]
+			if nombre == "" {
+				response = "❌ Falta el parámetro 'nombre'."
+			} else {
+				if err := exec.Command("cmd", "/c", "start", nombre).Start(); err != nil {
+					response = "❌ No se pudo abrir: " + err.Error()
+				} else {
+					response = "✅ Aplicación '" + nombre + "' iniciada."
+				}
+			}
+
+		// ── Seguridad ─────────────────────────────────────────────────────────
+		case "estado_defender":
+			response = checkWindowsDefenderStatus("", &memory)
+		case "actualizaciones_instaladas":
+			response = getInstalledUpdates("", &memory)
+		case "ver_usuarios_activos":
+			response = psRun(`query user 2>&1 || query session 2>&1`)
+
+		// ── Legacy / compatibilidad ───────────────────────────────────────────
 		case "restart_spooler":
 			response = fixPrinter("", &memory)
 		case "get_system_info":
 			response = getSystemInfo("", &memory)
+
 		default:
-			http.Error(w, "Invalid action", http.StatusBadRequest)
+			logger.Printf("[WARN] /execute: acción desconocida %q", cmd.Action)
+			http.Error(w, "Invalid action: "+cmd.Action, http.StatusBadRequest)
 			return
 		}
 		if _, err := w.Write([]byte(response)); err != nil {
@@ -5981,14 +6337,37 @@ func startCommandListener() {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		var payload struct{ Message string }
+		var payload struct {
+			Message  string `json:"message"`
+			TicketID string `json:"ticket_id"`
+			Author   string `json:"author"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			http.Error(w, "Bad request", http.StatusBadRequest)
 			return
 		}
-		if payload.Message != "" {
-			appendBubbleFromGoroutine("frank", "🔧 Soporte: "+payload.Message)
+		if payload.Message == "" {
+			w.WriteHeader(http.StatusNoContent)
+			return
 		}
+		// Mostrar en el chat
+		appendBubbleFromGoroutine("frank", "🔧 Soporte: "+payload.Message)
+
+		// Si la ventana está minimizada/oculta, lanzar notificación del sistema
+		if !isWindowVisible.Load() {
+			title := AgentName + " — Soporte"
+			if payload.Author != "" {
+				title = AgentName + " — " + payload.Author
+			}
+			go sendNotification(title, payload.Message)
+
+			// Mostrar la ventana y traerla al frente
+			fyne.Do(func() {
+				mainWindow.Show()
+				isWindowVisible.Store(true)
+			})
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	httpServer = &http.Server{
@@ -6010,9 +6389,10 @@ func startCommandListener() {
 // ── Gateway sync ──────────────────────────────────────────────────────────────
 
 // registerWithGateway registra este agente en el gateway central.
-func registerWithGateway() {
+// Devuelve true si el registro fue exitoso (HTTP 200).
+func registerWithGateway() bool {
 	if gatewayURL == "" {
-		return
+		return false
 	}
 	ip := getOutboundIP()
 	hostname, _ := os.Hostname()
@@ -6029,7 +6409,8 @@ func registerWithGateway() {
 
 	req, err := http.NewRequest("POST", gatewayURL+"/agents/register", bytes.NewReader(body))
 	if err != nil {
-		return
+		logger.Printf("[WARN] Gateway register request build error: %v", err)
+		return false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-API-Key", agentAPIKey)
@@ -6037,11 +6418,20 @@ func registerWithGateway() {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		logger.Printf("[WARN] Gateway register failed: %v", err)
-		return
+		logger.Printf("[WARN] Gateway register failed (connection): %v", err)
+		return false
 	}
 	defer resp.Body.Close()
-	logger.Printf("[INFO] Registered with gateway %s (status %d)", gatewayURL, resp.StatusCode)
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		logger.Printf("[WARN] Gateway register rejected — status %d: %s", resp.StatusCode, string(respBody))
+		if resp.StatusCode == http.StatusUnauthorized {
+			logger.Printf("[ERROR] 401 Unauthorized: AGENT_API_KEY no coincide con MICLAW_AGENT_KEY del gateway. Key usada: %q", agentAPIKey)
+		}
+		return false
+	}
+	logger.Printf("[INFO] Registrado en gateway %s — IP=%s", gatewayURL, ip)
+	return true
 }
 
 // sendHeartbeat envía métricas al gateway cada 60 segundos.
@@ -6093,19 +6483,44 @@ func sendHeartbeat() {
 }
 
 // startGatewaySync registra el agente y luego envía heartbeats periódicos.
+// Reintenta el registro hasta 5 veces con backoff exponencial si el gateway
+// no está disponible o rechaza la petición.
 func startGatewaySync(ctx context.Context) {
 	if gatewayURL == "" {
+		logger.Printf("[INFO] startGatewaySync: MICLAW_GATEWAY no configurado, sync desactivado")
 		return
 	}
-	// Esperar un poco para que el resto del sistema esté listo
+	logger.Printf("[INFO] startGatewaySync: conectando a %s con key=%q", gatewayURL, agentAPIKey)
+
+	// Esperar a que el resto del sistema esté listo
 	select {
 	case <-time.After(5 * time.Second):
 	case <-ctx.Done():
 		return
 	}
 
-	registerWithGateway()
+	// Registro con reintentos (backoff: 10s, 20s, 40s, 80s)
+	registered := false
+	for attempt := 1; attempt <= 5; attempt++ {
+		if registerWithGateway() {
+			registered = true
+			break
+		}
+		wait := time.Duration(10*attempt) * time.Second
+		logger.Printf("[WARN] Registro fallido (intento %d/5). Reintentando en %s...", attempt, wait)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return
+		}
+	}
 
+	if !registered {
+		logger.Printf("[ERROR] No se pudo registrar en el gateway después de 5 intentos. Heartbeats desactivados.")
+		return
+	}
+
+	// Heartbeat cada 60 segundos; si falla, lo reintenta en el próximo tick
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -7569,6 +7984,17 @@ func getBubbleColors() chatBubbleColors {
 // disponible — así el label envuelve correctamente sin texto vertical.
 // alignRight: el texto se alinea a la derecha (mensajes del usuario).
 func makeChatRow(text string, bgColor color.Color, alignRight bool) fyne.CanvasObject {
+	// rawText sin prefijos de rol para copiar al portapapeles
+	rawText := text
+	if len(rawText) > 4 && (rawText[:3] == "▶ T" || rawText[:3] == "🤖 ") {
+		// quitar prefijos decorativos: "▶ Tú: " (6) ó "🤖 " (variable en bytes)
+		if idx := strings.Index(rawText, ": "); idx > 0 && idx < 12 {
+			rawText = rawText[idx+2:]
+		} else if strings.HasPrefix(rawText, "🤖 ") {
+			rawText = strings.TrimPrefix(rawText, "🤖 ")
+		}
+	}
+
 	var lbl *widget.Label
 	if alignRight {
 		lbl = widget.NewLabelWithStyle(text, fyne.TextAlignTrailing, fyne.TextStyle{Bold: true})
@@ -7580,9 +8006,16 @@ func makeChatRow(text string, bgColor color.Color, alignRight bool) fyne.CanvasO
 	bg := canvas.NewRectangle(bgColor)
 	bg.CornerRadius = 8
 
-	// NewStack da a bg y a lbl el mismo tamaño que el VBox asigne al hijo
-	// → ancho completo, sin cuello de botella de HBox/MinSize
-	return container.NewStack(bg, container.NewPadded(lbl))
+	// Botón de copiar — pequeño, bajo contraste, en la esquina superior derecha
+	captured := rawText
+	copyBtn := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+		mainWindow.Clipboard().SetContent(captured)
+	})
+	copyBtn.Importance = widget.LowImportance
+
+	// Layout: fondo completo, texto con padding, botón superpuesto arriba-derecha
+	content := container.NewBorder(nil, nil, nil, copyBtn, container.NewPadded(lbl))
+	return container.NewStack(bg, content)
 }
 
 // maxWidthLayout queda como utilidad auxiliar para settings preview.
@@ -7675,6 +8108,68 @@ func appendBubbleFromGoroutine(role, text string) {
 	fyne.Do(func() {
 		addBubble(role, text)
 	})
+}
+
+// addConfirmationBubble muestra la respuesta de Frank con botones SI/NO clickeables.
+// El usuario puede confirmar pulsando el botón O escribiendo "si"/"no" en el input.
+// Debe llamarse desde el hilo principal de Fyne.
+func addConfirmationBubble(frankText string, input *widget.Entry, sendBtn *widget.Button) {
+	if chatVBox == nil {
+		return
+	}
+	cols := getBubbleColors()
+
+	// Texto de la pregunta
+	lbl := widget.NewLabel("🤖 " + frankText)
+	lbl.Wrapping = fyne.TextWrapWord
+	bgRect := canvas.NewRectangle(cols.FrankBG)
+	bgRect.CornerRadius = 8
+
+	captured := frankText
+	copyBtn := widget.NewButtonWithIcon("", theme.ContentCopyIcon(), func() {
+		mainWindow.Clipboard().SetContent(captured)
+	})
+	copyBtn.Importance = widget.LowImportance
+	textContent := container.NewBorder(nil, nil, nil, copyBtn, container.NewPadded(lbl))
+	textRow := container.NewStack(bgRect, textContent)
+
+	// Botones SI / NO — se deshabilitan al responder (evita doble-clic)
+	var yesBtn, noBtn *widget.Button
+	responded := false
+
+	respond := func(answer string) {
+		if responded {
+			return
+		}
+		responded = true
+		yesBtn.Disable()
+		noBtn.Disable()
+		// Procesar como si el usuario hubiera escrito la respuesta
+		processMessage(answer, input, sendBtn)
+	}
+
+	yesBtn = widget.NewButtonWithIcon("✅  Sí, confirmar", theme.ConfirmIcon(), func() {
+		respond("si")
+	})
+	yesBtn.Importance = widget.SuccessImportance
+
+	noBtn = widget.NewButtonWithIcon("❌  No, cancelar", theme.CancelIcon(), func() {
+		respond("no")
+	})
+	noBtn.Importance = widget.DangerImportance
+
+	btnRow := container.NewGridWithColumns(2, yesBtn, noBtn)
+
+	hint := widget.NewLabel("También podés escribir \"si\" o \"no\" en el chat.")
+	hint.Importance = widget.LowImportance
+
+	bubble := container.NewVBox(textRow, btnRow, hint)
+	chatVBox.Add(bubble)
+	chatVBox.Add(widget.NewSeparator())
+	chatVBox.Refresh()
+	if chatScrollNew != nil {
+		chatScrollNew.ScrollToBottom()
+	}
 }
 
 // rebuildChatBubbles reconstruye todas las burbujas del chat usando los colores

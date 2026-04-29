@@ -111,3 +111,30 @@ export interface LocalSettings {
   notificationsEnabled: boolean
   sidebarCollapsed: boolean
 }
+
+// ── Safe Action Execution Model ───────────────────────────────────────────────
+
+/** Payload inside an action_request response from /ai/query */
+export interface AIActionRequest {
+  action: string       // e.g. "reiniciar_spooler"
+  target: string       // agent ID, e.g. "frank-192.168.1.100"
+  message: string      // human-readable explanation from the LLM
+  confidence: number   // 0.0 – 1.0
+}
+
+/** The full response shape returned by GET /ai/query */
+export interface AIQueryResponse {
+  /** Discriminator: what the LLM decided to do */
+  type: 'message' | 'action_request'
+  /** Plain text reply (type=message) or undefined */
+  content?: string
+  /** Flat text copy — backwards-compat for simple callers */
+  response: string
+  /** Which backend served the answer */
+  source: 'ollama' | 'fallback' | 'filter'
+  // Action fields — only present when type=action_request
+  action?:     string
+  target?:     string
+  message?:    string
+  confidence?: number
+}

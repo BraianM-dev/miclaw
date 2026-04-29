@@ -42,10 +42,22 @@ func New(ollamaURL, model string) *Client {
 // Query sends a prompt to Ollama and returns the response.
 // Results are cached for 10 minutes by (model+prompt) key.
 func (c *Client) Query(prompt, systemPrompt string) (string, error) {
-	key := cacheKey(c.model + systemPrompt + prompt)
+	return c.query(prompt, systemPrompt, "", 0.7, 512)
+}
+
+// QueryJSON sends a prompt requesting a JSON-formatted response.
+// Ollama's "format":"json" constraint forces valid JSON output.
+// Uses lower temperature (0.3) for consistent structured output.
+func (c *Client) QueryJSON(prompt, systemPrompt string) (string, error) {
+	return c.query(prompt, systemPrompt, "json", 0.3, 768)
+}
+
+// query is the shared implementation used by Query and QueryJSON.
+func (c *Client) query(prompt, systemPrompt, format string, temperature float64, numPredict int) (string, error) {
+	cKey := cacheKey(c.model + systemPrompt + format + prompt)
 
 	c.mu.Lock()
-	if entry, ok := c.cache[key]; ok && time.Now().Before(entry.exp) {
+	if entry, ok := c.cache[cKey]; ok && time.Now().Before(entry.exp) {
 		resp := entry.response
 		c.mu.Unlock()
 		return resp, nil
@@ -57,12 +69,15 @@ func (c *Client) Query(prompt, systemPrompt string) (string, error) {
 		"prompt": prompt,
 		"stream": false,
 		"options": map[string]any{
-			"temperature": 0.7,
-			"num_predict": 512,
+			"temperature": temperature,
+			"num_predict": numPredict,
 		},
 	}
 	if systemPrompt != "" {
 		body["system"] = systemPrompt
+	}
+	if format != "" {
+		body["format"] = format
 	}
 
 	raw, err := json.Marshal(body)
@@ -99,8 +114,7 @@ func (c *Client) Query(prompt, systemPrompt string) (string, error) {
 	}
 
 	c.mu.Lock()
-	c.cache[key] = cacheEntry{response: result.Response, exp: time.Now().Add(10 * time.Minute)}
-	// Evict old entries if cache grows too large
+	c.cache[cKey] = cacheEntry{response: result.Response, exp: time.Now().Add(10 * time.Minute)}
 	if len(c.cache) > 256 {
 		for k, v := range c.cache {
 			if time.Now().After(v.exp) {

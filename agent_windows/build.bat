@@ -47,6 +47,7 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 echo [OK] Frank64.exe listo.
+call :sign Frank64.exe
 goto :eof
 
 :: ─────────────────────────────── 32-bit ──────────────────────────────────
@@ -75,6 +76,22 @@ if %ERRORLEVEL% neq 0 (
     exit /b 1
 )
 echo [OK] Frank32.exe listo.
+call :sign Frank32.exe
+goto :eof
+
+:: ─────────────────────────── firma Authenticode ───────────────────────────
+:sign
+if exist sign-frank.ps1 (
+    echo [SIGN] Firmando %~1 con certificado AFE...
+    powershell -NoProfile -ExecutionPolicy Bypass -File sign-frank.ps1 2>nul
+    if %ERRORLEVEL% equ 0 (
+        echo [OK] %~1 firmado.
+    ) else (
+        echo [WARN] Firma omitida ^(ejecuta sign-frank.ps1 como Administrador una vez^).
+    )
+) else (
+    echo [WARN] sign-frank.ps1 no encontrado — ejecutable SIN firmar.
+)
 goto :eof
 
 :: ─────────────────────────── ambos en secuencia ──────────────────────────

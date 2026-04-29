@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AIQueryResponse,
   Alert,
   Command,
   DashboardStats,
@@ -96,9 +97,9 @@ export const api = {
   messages: (ticketId: number) =>
     get<TicketMessage[]>(`/tickets/${ticketId}/messages`),
 
-  // AI
+  // AI — returns structured safe-action response
   aiQuery: (prompt: string, context?: string) =>
-    post<{ response: string; source: string }>('/ai/query', { prompt, context }),
+    post<AIQueryResponse>('/ai/query', { prompt, context }),
 
   // Network
   locations: () => get<NetworkLocation[]>('/network/locations'),
@@ -121,7 +122,10 @@ export const api = {
 
 // ── Server-Sent Events ────────────────────────────────────────────────────────
 // EventSource does not support custom headers — we pass the API key as ?key=
-export function connectEvents(onEvent: (event: SSEEvent) => void): () => void {
+export function connectEvents(
+  onEvent: (event: SSEEvent) => void,
+  onDisconnect?: () => void,
+): () => void {
   const key = getKey()
   const url = `${BASE}/events?key=${encodeURIComponent(key)}`
   let es: EventSource | null = null
@@ -139,6 +143,7 @@ export function connectEvents(onEvent: (event: SSEEvent) => void): () => void {
 
     es.onerror = () => {
       es?.close()
+      onDisconnect?.()
       if (!closed) setTimeout(connect, 3000)
     }
   }
